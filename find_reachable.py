@@ -56,3 +56,24 @@ for target_id in targets:
     else:
         print(f"Asteroidi {target_id}: {total_dv:.2f} m/s - I PAARRITSHEM")
 
+
+# E analizojna asteroidin 52 se edhe pse ka kerku ma se paku delta-v,
+# duhet me dit cfare materiali ka edhe masen
+asteroid_id = 52
+
+material_types = ["Gold", "Platinum", "Nickel", "Fuel"]
+
+material_id = int(udp.asteroid_materials_types[asteroid_id])
+mass = udp.asteroid_masses[asteroid_id]
+
+print("\n--- Asteroidi 52 ---")
+print("Materiali:", material_types[material_id])
+print("Masa:", round(mass, 3))
+
+# Simulojme nxjerrjen e nikelit per 10 dite
+mining_days = 10
+
+collected_mass = min(mass, mining_days / 30)
+
+print("Ditet e nxjerrjes:", mining_days)
+print("Sasia e nikelit e mbledhur:", round(collected_mass, 3))
