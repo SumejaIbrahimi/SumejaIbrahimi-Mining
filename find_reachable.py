@@ -97,3 +97,64 @@ for asteroid in reachable_asteroids:
         f"Materiali: {asteroid['material']}, "
         f"Masa: {asteroid['mass']:.3f}"
     )
+
+if reachable_asteroids:
+    best_asteroid = min(
+        reachable_asteroids,
+        key=lambda asteroid: asteroid["dv"]
+    )
+
+    print("\n--- Zgjedhja Greedy ---")
+    print("Asteroidi i zgjedhur:", best_asteroid["id"])
+    print("Delta-v:", round(best_asteroid["dv"], 2), "m/s")
+    print("Masa:", round(best_asteroid["mass"], 3))
+
+collected_materials = {
+    0: 0.0,  # Gold
+    1: 0.0,  # Platinum
+    2: 0.0   # Nickel
+}
+
+print("\n--- Materialet e mbledhura ---")
+print("Gold:", collected_materials[0])
+print("Platinum:", collected_materials[1])
+print("Nickel:", collected_materials[2])
+
+
+min_amount = min(collected_materials.values())
+
+needed_materials = [
+    material_id
+    for material_id, amount in collected_materials.items()
+    if amount == min_amount
+]
+
+print("\n--- Materialet prioritare ---")
+print("Materialet qe na duhen:", needed_materials)
+
+priority_asteroids = [
+    asteroid
+    for asteroid in reachable_asteroids
+    if asteroid["material"] in needed_materials
+]
+
+print("\n--- Asteroidet prioritare ---")
+
+for asteroid in priority_asteroids:
+    print(
+        f"ID: {asteroid['id']}, "
+        f"Materiali: {asteroid['material']}, "
+        f"Delta-v: {asteroid['dv']:.2f} m/s"
+    )
+
+if priority_asteroids:
+    best_priority_asteroid = min(
+        priority_asteroids,
+        key=lambda asteroid: asteroid["dv"]
+    )
+
+    print("\n--- Zgjedhja Greedy me prioritet ---")
+    print("Asteroidi:", best_priority_asteroid["id"])
+    print("Materiali:", best_priority_asteroid["material"])
+    print("Delta-v:", round(best_priority_asteroid["dv"], 2), "m/s")
+    print("Masa:", round(best_priority_asteroid["mass"], 3))
