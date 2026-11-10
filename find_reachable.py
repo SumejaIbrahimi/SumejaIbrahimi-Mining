@@ -6,6 +6,49 @@ esa = runpy.run_path("spoc-mining-mine-the-belt.py")
 # E marrim objektin me t'dhenat e asteroideve
 udp = esa["udp"]
 
+def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv, limit=500):
+    reachable = []
+
+    r1, v1 = udp.asteroids[start_id].eph(
+        esa["T_START"].mjd2000 + departure_day
+    )
+
+    for target_id in range(min(limit, len(udp.asteroids))):
+        if target_id in [start_id, 5]:
+            continue
+
+        r2, v2 = udp.asteroids[target_id].eph(
+            esa["T_START"].mjd2000 + arrival_day
+        )
+
+        trajectory = pk.lambert_problem(
+            r1=r1,
+            r2=r2,
+            tof=(arrival_day - departure_day) * pk.DAY2SEC,
+            mu=udp.MU,
+            cw=False,
+            max_revs=0
+        )
+
+        dv1 = np.linalg.norm(
+            np.array(v1) - np.array(trajectory.get_v1()[0])
+        )
+        dv2 = np.linalg.norm(
+            np.array(v2) - np.array(trajectory.get_v2()[0])
+        )
+
+        total_dv = dv1 + dv2
+
+        if total_dv <= available_dv:
+            reachable.append({
+                "id": target_id,
+                "dv": total_dv,
+                "material": int(udp.asteroid_materials_types[target_id]),
+                "mass": float(udp.asteroid_masses[target_id])
+            })
+
+    return reachable
+
 # Asteroidi prej t'cilit nisem
 start_id = 5
 
@@ -284,3 +327,51 @@ if second_priority_asteroids:
 else:
     print("Nuk u gjet asnje asteroid me Gold ose Platinum.")
     print("Duhet te zgjerojme kerkimin.")
+
+print("\n--- Testimi i funksionit automatik ---")
+
+test_reachable = find_reachable_asteroids(
+    start_id=52,
+    departure_day=31,
+    arrival_day=51,
+    available_dv=remaining_dv,
+    limit=500
+)
+
+print("Numri i asteroideve te arritshem:", len(test_reachable))
+
+for asteroid in test_reachable:
+    print(
+        f"ID: {asteroid['id']}, "
+        f"Materiali: {asteroid['material']}, "
+        f"Delta-v: {asteroid['dv']:.2f} m/s"
+    )
+
+next_priority_asteroids = [
+    asteroid
+    for asteroid in test_reachable
+    if asteroid["material"] in needed_materials
+]
+
+print("\n--- Zgjedhja e asteroidit te dyte ---")
+
+if next_priority_asteroids:
+    next_asteroid = min(
+        next_priority_asteroids,
+        key=lambda asteroid: asteroid["dv"]
+    )
+
+    print("Asteroidi i zgjedhur:", next_asteroid["id"])
+    print("Materiali:", next_asteroid["material"])
+    print("Delta-v:", round(next_asteroid["dv"], 2), "m/s")
+    print("Masa:", round(next_asteroid["mass"], 3))
+else:
+    print("Nuk ka asteroide me materiale prioritare.")
+
+if next_priority_asteroids:
+    remaining_dv -= next_asteroid["dv"]
+
+    print("\n--- Gjendja pas udhetimit te dyte ---")
+    print("Asteroidi aktual:", next_asteroid["id"])
+    print("Delta-v e mbetur:", round(remaining_dv, 2), "m/s")
+
