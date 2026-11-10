@@ -26,7 +26,7 @@ r1, v1 = udp.asteroids[start_id].eph(
     esa["T_START"].mjd2000 + departure_day
 )
 
-
+reachable_asteroids = []
 for target_id in targets:
     if target_id == start_id:
         continue
@@ -52,6 +52,15 @@ for target_id in targets:
     total_dv = dv1 + dv2
 
     if total_dv <= 10000:
+        material_id = int(udp.asteroid_materials_types[target_id])
+        mass = float(udp.asteroid_masses[target_id])
+
+        reachable_asteroids.append({
+            "id": target_id,
+            "dv": total_dv,
+            "material": material_id,
+            "mass": mass
+        })
         print(f"Asteroidi {target_id}: {total_dv:.2f} m/s - I ARRITSHEM")
     else:
         print(f"Asteroidi {target_id}: {total_dv:.2f} m/s - I PAARRITSHEM")
@@ -77,3 +86,14 @@ collected_mass = min(mass, mining_days / 30)
 
 print("Ditet e nxjerrjes:", mining_days)
 print("Sasia e nikelit e mbledhur:", round(collected_mass, 3))
+
+print("\n--- Permbledhja e kerkimit ---")
+print("Numri i asteroideve te arritshem:", len(reachable_asteroids))
+
+for asteroid in reachable_asteroids:
+    print(
+        f"ID: {asteroid['id']}, "
+        f"Delta-v: {asteroid['dv']:.2f} m/s, "
+        f"Materiali: {asteroid['material']}, "
+        f"Masa: {asteroid['mass']:.3f}"
+    )
