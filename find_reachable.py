@@ -16,7 +16,7 @@ print("Numri total i asteroideve:", len(udp.asteroids))
 import numpy as np
 import pykep as pk
 
-targets = [10, 20, 30, 40, 42]
+targets = range(100)
 
 departure_day = 0
 arrival_day = 20
@@ -26,7 +26,11 @@ r1, v1 = udp.asteroids[start_id].eph(
     esa["T_START"].mjd2000 + departure_day
 )
 
+
 for target_id in targets:
+    if target_id == start_id:
+        continue
+
     # Pozita edhe shpejtesia e asteroidit ku dojna me shku
     r2, v2 = udp.asteroids[target_id].eph(
         esa["T_START"].mjd2000 + arrival_day
