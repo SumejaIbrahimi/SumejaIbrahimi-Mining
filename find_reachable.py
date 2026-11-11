@@ -6,7 +6,7 @@ esa = runpy.run_path("spoc-mining-mine-the-belt.py")
 # E marrim objektin me t'dhenat e asteroideve
 udp = esa["udp"]
 
-def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv, limit=500):
+def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv, visited_asteroids, limit=500):
     reachable = []
 
     r1, v1 = udp.asteroids[start_id].eph(
@@ -14,7 +14,7 @@ def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv,
     )
 
     for target_id in range(min(limit, len(udp.asteroids))):
-        if target_id in [start_id, 5]:
+        if target_id == start_id or target_id in visited_asteroids:
             continue
 
         r2, v2 = udp.asteroids[target_id].eph(
@@ -335,6 +335,7 @@ test_reachable = find_reachable_asteroids(
     departure_day=31,
     arrival_day=51,
     available_dv=remaining_dv,
+    visited_asteroids=[5, 52],
     limit=500
 )
 
@@ -374,4 +375,86 @@ if next_priority_asteroids:
     print("\n--- Gjendja pas udhetimit te dyte ---")
     print("Asteroidi aktual:", next_asteroid["id"])
     print("Delta-v e mbetur:", round(remaining_dv, 2), "m/s")
+
+visited_asteroids = [
+    start_id,
+    best_priority_asteroid["id"]
+]
+
+if next_priority_asteroids:
+    visited_asteroids.append(next_asteroid["id"])
+
+print("\n--- Asteroidet e vizituar ---")
+print(visited_asteroids)
+
+# Gjendja aktuale e ketij misioni
+mission_current_id = next_asteroid["id"]
+mission_current_day = next_arrival_day
+mission_remaining_dv = remaining_dv
+
+print("\n--- Gjendja aktuale e misionit ---")
+print("Asteroidi aktual:", mission_current_id)
+print("Dita aktuale:", mission_current_day)
+print("Delta-v e mbetur:", round(mission_remaining_dv, 2))
+print("Asteroidet e vizituar:", visited_asteroids)
+
+# Mining i materialit ne asteroidin aktual
+mining_days = 23
+
+current_material = next_asteroid["material"]
+current_mass = next_asteroid["mass"]
+
+mined_mass = min(current_mass, mining_days / 30.0)
+
+if current_material in collected_materials:
+    collected_materials[current_material] += mined_mass
+
+mission_current_day += mining_days
+
+print("\n--- Rezultati i minimit ---")
+print("Asteroidi:", mission_current_id)
+print("Materiali:", current_material)
+print("Masa e mbledhur:", round(mined_mass, 3))
+print("Dita pas minimit:", mission_current_day)
+print("Materialet e mbledhura:", collected_materials)
+
+# Perditesimi i materialeve qe na mungojne (platinum n'kete rast)
+needed_materials = [
+    material
+    for material in [0, 1, 2]
+    if collected_materials[material] == 0
+]
+
+print("\n--- Materialet qe na mungojne ---")
+print("Materialet:", needed_materials)
+
+material_names = {
+    0: "Gold",
+    1: "Platinum",
+    2: "Nickel"
+}
+
+for material in needed_materials:
+    print("Duhet te kerkojme:", material_names[material])
+
+next_departure_day = mission_current_day
+next_arrival_day = next_departure_day + 20
+
+future_reachable = find_reachable_asteroids(
+    start_id=mission_current_id,
+    departure_day=next_departure_day,
+    arrival_day=next_arrival_day,
+    available_dv=mission_remaining_dv,
+    visited_asteroids=visited_asteroids,
+    limit=500
+)
+
+print("\n--- Kerkimi i ardhshem ---")
+print("Dita e nisjes:", next_departure_day)
+print("Dita e mberritjes:", next_arrival_day)
+print("Delta-v ne dispozicion:", round(mission_remaining_dv, 2))
+print("Numri i asteroideve te arritshem:", len(future_reachable))
+
+for asteroid in future_reachable:
+    print(asteroid)
 
