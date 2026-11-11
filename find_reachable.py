@@ -1,5 +1,7 @@
 
 import runpy
+import numpy as np
+import pykep as pk
 
 esa = runpy.run_path("spoc-mining-mine-the-belt.py")
 
@@ -56,59 +58,19 @@ print("Asteroidi fillestar:", start_id)
 print("Numri total i asteroideve:", len(udp.asteroids))
 
 # provojna asteroide (disa)
-import numpy as np
-import pykep as pk
-
 print("Numri i kandidateve qe po testohen:", 500)
-targets = range(500)
 
 departure_day = 0
 arrival_day = 20
 
-# Pozita edhe shpejtesia e asteroidit fillestar
-r1, v1 = udp.asteroids[start_id].eph(
-    esa["T_START"].mjd2000 + departure_day
+reachable_asteroids = find_reachable_asteroids(
+    start_id=start_id,
+    departure_day=departure_day,
+    arrival_day=arrival_day,
+    available_dv=10000,
+    visited_asteroids=[start_id],
+    limit=500
 )
-
-reachable_asteroids = []
-for target_id in targets:
-    if target_id == start_id:
-        continue
-
-    # Pozita edhe shpejtesia e asteroidit ku dojna me shku
-    r2, v2 = udp.asteroids[target_id].eph(
-        esa["T_START"].mjd2000 + arrival_day
-    )
-
-    # Llogarisim trajektoren
-    trajectory = pk.lambert_problem(
-        r1=r1,
-        r2=r2,
-        tof=(arrival_day - departure_day) * pk.DAY2SEC,
-        mu=udp.MU,
-        cw=False,
-        max_revs=0
-    )
-
-    dv1 = np.linalg.norm(np.array(v1) - np.array(trajectory.get_v1()[0]))
-    dv2 = np.linalg.norm(np.array(v2) - np.array(trajectory.get_v2()[0]))
-
-    total_dv = dv1 + dv2
-
-    if total_dv <= 10000:
-        material_id = int(udp.asteroid_materials_types[target_id])
-        mass = float(udp.asteroid_masses[target_id])
-
-        reachable_asteroids.append({
-            "id": target_id,
-            "dv": total_dv,
-            "material": material_id,
-            "mass": mass
-        })
-        print(f"Asteroidi {target_id}: {total_dv:.2f} m/s - I ARRITSHEM")
-    else:
-        print(f"Asteroidi {target_id}: {total_dv:.2f} m/s - I PAARRITSHEM")
-
 
 # E analizojna asteroidin 52 se edhe pse ka kerku ma se paku delta-v,
 # duhet me dit cfare materiali ka edhe masen
@@ -257,48 +219,14 @@ print("Delta-v e disponueshme:", round(remaining_dv, 2), "m/s")
 
 print("\n--- Kerkimi i asteroidit te dyte ---")
 
-r1, v1 = udp.asteroids[current_asteroid_id].eph(
-    esa["T_START"].mjd2000 + current_day
+second_reachable = find_reachable_asteroids(
+    start_id=current_asteroid_id,
+    departure_day=current_day,
+    arrival_day=next_arrival_day,
+    available_dv=remaining_dv,
+    visited_asteroids=[start_id, current_asteroid_id],
+    limit=100
 )
-
-second_reachable = []
-
-for target_id in range(100):
-    if target_id in [start_id, current_asteroid_id]:
-        continue
-
-    r2, v2 = udp.asteroids[target_id].eph(
-        esa["T_START"].mjd2000 + next_arrival_day
-    )
-
-    trajectory = pk.lambert_problem(
-        r1=r1,
-        r2=r2,
-        tof=(next_arrival_day - current_day) * pk.DAY2SEC,
-        mu=udp.MU,
-        cw=False,
-        max_revs=0
-    )
-
-    dv1 = np.linalg.norm(
-        np.array(v1) - np.array(trajectory.get_v1()[0])
-    )
-    dv2 = np.linalg.norm(
-        np.array(v2) - np.array(trajectory.get_v2()[0])
-    )
-
-    total_dv = dv1 + dv2
-
-    if total_dv <= remaining_dv:
-        material_id = int(udp.asteroid_materials_types[target_id])
-        mass = float(udp.asteroid_masses[target_id])
-
-        second_reachable.append({
-            "id": target_id,
-            "dv": total_dv,
-            "material": material_id,
-            "mass": mass
-        })
 
 print("Numri i asteroideve te arritshem:", len(second_reachable))
 
@@ -458,3 +386,4 @@ print("Numri i asteroideve te arritshem:", len(future_reachable))
 for asteroid in future_reachable:
     print(asteroid)
 
+# Numri i asteroidve te arritshem na ka dal 0, per shkak te kushteve qe i kena vendos
