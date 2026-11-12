@@ -2,9 +2,9 @@
 import runpy
 import numpy as np
 import pykep as pk
+from greedy import select_best_asteroid
 
 esa = runpy.run_path("spoc-mining-mine-the-belt.py")
-
 # E marrim objektin me t'dhenat e asteroideve
 udp = esa["udp"]
 
@@ -105,10 +105,7 @@ for asteroid in reachable_asteroids:
     )
 
 if reachable_asteroids:
-    best_asteroid = min(
-        reachable_asteroids,
-        key=lambda asteroid: asteroid["dv"]
-    )
+    best_asteroid = select_best_asteroid(reachable_asteroids)
 
     print("\n--- Zgjedhja Greedy ---")
     print("Asteroidi i zgjedhur:", best_asteroid["id"])
@@ -154,10 +151,7 @@ for asteroid in priority_asteroids:
     )
 
 if priority_asteroids:
-    best_priority_asteroid = min(
-        priority_asteroids,
-        key=lambda asteroid: asteroid["dv"]
-    )
+    best_priority_asteroid = select_best_asteroid(priority_asteroids)
 
     print("\n--- Zgjedhja Greedy me prioritet ---")
     print("Asteroidi:", best_priority_asteroid["id"])
@@ -285,10 +279,7 @@ next_priority_asteroids = [
 print("\n--- Zgjedhja e asteroidit te dyte ---")
 
 if next_priority_asteroids:
-    next_asteroid = min(
-        next_priority_asteroids,
-        key=lambda asteroid: asteroid["dv"]
-    )
+    next_asteroid = select_best_asteroid(next_priority_asteroids)
 
     print("Asteroidi i zgjedhur:", next_asteroid["id"])
     print("Materiali:", next_asteroid["material"])
