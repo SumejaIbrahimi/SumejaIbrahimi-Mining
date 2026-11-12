@@ -51,6 +51,40 @@ def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv,
 
     return reachable
 
+def search_multiple_transfers(
+    start_id,
+    departure_day,
+    available_dv,
+    visited_asteroids,
+    limit=500
+):
+    candidates = []
+
+    transfer_days = [20, 40, 60, 80, 100]
+
+    for days in transfer_days:
+        arrival_day = departure_day + days
+
+        if arrival_day > 1827:
+            continue
+
+        reachable = find_reachable_asteroids(
+            start_id=start_id,
+            departure_day=departure_day,
+            arrival_day=arrival_day,
+            available_dv=available_dv,
+            visited_asteroids=visited_asteroids,
+            limit=limit
+        )
+
+        for asteroid in reachable:
+            asteroid["transfer_days"] = days
+            asteroid["arrival_day"] = arrival_day
+
+            candidates.append(asteroid)
+
+    return candidates
+
 # Asteroidi prej t'cilit nisem
 start_id = 5
 
@@ -378,3 +412,35 @@ for asteroid in future_reachable:
     print(asteroid)
 
 # Numri i asteroidve te arritshem na ka dal 0, per shkak te kushteve qe i kena vendos
+
+# Validimi i trajektores aktuale me evaluatorin e ESA-s
+
+solution = [
+    0, 20, 51,    # Kohet e mberritjes
+    0, 11, 23,    # Kohet e minimit
+    5, 52, 162    # ID-te e asteroideve
+]
+
+chromosome = esa["convert_to_chromosome"](solution)
+
+print("\n--- Validimi me evaluatorin e ESA-s ---")
+
+result = udp.fitness(chromosome, verbose=True)
+
+print("Score zyrtar:", result[0])
+print("\n--- Kerkimi me kohe te ndryshme ---")
+
+multiple_candidates = search_multiple_transfers(
+    start_id=5,
+    departure_day=1,
+    available_dv=10000,
+    visited_asteroids=[5],
+    limit=500
+)
+
+print("Numri i alternativave:", len(multiple_candidates))
+
+best_transfer = select_best_asteroid(multiple_candidates)
+
+print("Alternativa me Delta-v minimale:")
+print(best_transfer)
