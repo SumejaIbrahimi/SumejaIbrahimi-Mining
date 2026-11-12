@@ -1,5 +1,5 @@
 from mission import initialize_mission, mine_asteroid
-from find_reachable import search_multiple_transfers
+from find_reachable import search_multiple_transfers, esa, udp
 from greedy import select_priority_asteroid
 import math
 
@@ -65,3 +65,18 @@ if __name__ == "__main__":
     print("Asteroidet:", result["visited_asteroids"])
     print("Materialet:", result["collected_materials"])
     print("Score:", min(result["collected_materials"].values()))
+
+       # Krijimi i zgjidhjes n'formatin e ESA-s
+    solution = (
+        result["arrival_times"]
+        + result["mining_times"]
+        + result["visited_asteroids"]
+    )
+
+    chromosome = esa["convert_to_chromosome"](solution)
+
+    print("\n--- Validimi zyrtar i Greedy ---")
+
+    fitness = udp.fitness(chromosome, verbose=True)
+
+    print("Score zyrtar:", fitness[0]) 
