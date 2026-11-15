@@ -5,12 +5,12 @@ def select_best_asteroid(candidates):
 
     return min(candidates, key=lambda asteroid: asteroid["dv"])
 
-def select_priority_asteroid(candidates, mission):
+def select_priority_asteroid(candidates, mission, fuel_threshold=4000):
     if not candidates:
         return None
 
     # Prioriteti i karburantit
-    if mission["remaining_dv"] < 4000:
+    if mission["remaining_dv"] < fuel_threshold:
         fuel_candidates = [
             asteroid for asteroid in candidates
             if asteroid["material"] == 3
