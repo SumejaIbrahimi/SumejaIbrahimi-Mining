@@ -57,16 +57,19 @@ def run_greedy(start_id=5, limit=500, fuel_threshold=4000):
 
     return mission
 
-
 if __name__ == "__main__":
-    result = run_greedy(start_id=5)
+    result = run_greedy(
+        start_id=5,
+        limit=5000,
+        fuel_threshold=4000
+    )
 
     print("\n--- Rezultati i misionit ---")
     print("Asteroidet:", result["visited_asteroids"])
     print("Materialet:", result["collected_materials"])
     print("Score:", min(result["collected_materials"].values()))
 
-       # Krijimi i zgjidhjes n'formatin e ESA-s
+    # Krijimi i zgjidhjes ne formatin e ESA-s
     solution = (
         result["arrival_times"]
         + result["mining_times"]
@@ -79,4 +82,4 @@ if __name__ == "__main__":
 
     fitness = udp.fitness(chromosome, verbose=True)
 
-    print("Score zyrtar:", fitness[0]) 
+    print("Score zyrtar:", fitness[0])
