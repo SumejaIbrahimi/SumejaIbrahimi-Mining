@@ -59,9 +59,9 @@ def run_greedy(start_id=5, limit=500, fuel_threshold=4000):
 
 if __name__ == "__main__":
     result = run_greedy(
-        start_id=5,
-        limit=5000,
-        fuel_threshold=4000
+        start_id=300,
+        limit=2000,
+        fuel_threshold=5000
     )
 
     print("\n--- Rezultati i misionit ---")
