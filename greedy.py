@@ -6,7 +6,11 @@ def select_best_asteroid(candidates):
 
     return min(candidates, key=lambda asteroid: asteroid["dv"])
 
-def select_priority_asteroid(candidates, mission, fuel_threshold=4000, improved=False):
+def select_priority_asteroid(candidates,
+                              mission,
+                              fuel_threshold=4000,
+                              improved=False,
+                              improved_fuel=False):
     if not candidates:
         return None
 
@@ -18,7 +22,15 @@ def select_priority_asteroid(candidates, mission, fuel_threshold=4000, improved=
         ]
 
         if fuel_candidates:
-            return select_best_asteroid(fuel_candidates)
+             if improved_fuel:
+                return max(
+                    fuel_candidates,
+                    key=lambda asteroid: calculate_fuel_score(
+                        asteroid, mission
+                    )
+                )
+             
+             return select_best_asteroid(fuel_candidates)
 
     # Materiali qe kemi me se paku
     materials = mission["collected_materials"]
@@ -58,3 +70,21 @@ def calculate_candidate_score(asteroid):
     score = mass / (total_days * fuel_penalty)
 
     return score
+
+def calculate_fuel_score(asteroid, mission):
+    remaining_dv = mission["remaining_dv"]
+    travel_cost = asteroid["dv"]
+    mass = asteroid["mass"]
+
+    fuel_gain = mass * 10000
+
+    post_travel_dv = remaining_dv - travel_cost
+
+    post_mining_dv = min(
+        10000,
+        post_travel_dv + fuel_gain
+    )
+
+    net_gain = post_mining_dv - remaining_dv
+
+    return net_gain
