@@ -53,7 +53,7 @@ def calculate_candidate_score(asteroid):
     mining_days = max(1, math.ceil(mass * 30))
     total_days = transfer_days + mining_days
 
-    fuel_penalty = 1 + dv / 10000
+    fuel_penalty = (1 + dv / 10000) ** 4
 
     score = mass / (total_days * fuel_penalty)
 
