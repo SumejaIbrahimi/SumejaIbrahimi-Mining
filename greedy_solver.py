@@ -4,7 +4,7 @@ from greedy import select_priority_asteroid
 import math
 
 
-def run_greedy(start_id=5, limit=500, fuel_threshold=4000):
+def run_greedy(start_id=5, limit=500, fuel_threshold=4000, improved=False):
     mission = initialize_mission(start_id)
 
     while mission["current_day"] < 1827:
@@ -32,7 +32,12 @@ def run_greedy(start_id=5, limit=500, fuel_threshold=4000):
         if not candidates:
             break
 
-        best = select_priority_asteroid(candidates, mission, fuel_threshold)
+        best = select_priority_asteroid(
+            candidates,
+            mission,
+            fuel_threshold,
+            improved=improved
+            )
 
         mining_days = max(1, math.ceil(best["mass"] * 30))
 
@@ -61,7 +66,8 @@ if __name__ == "__main__":
     result = run_greedy(
         start_id=300,
         limit=2000,
-        fuel_threshold=5000
+        fuel_threshold=5000,
+        improved=True
     )
 
     print("\n--- Rezultati i misionit ---")

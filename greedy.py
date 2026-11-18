@@ -1,3 +1,4 @@
+import math
 
 def select_best_asteroid(candidates):
     if not candidates:
@@ -5,7 +6,7 @@ def select_best_asteroid(candidates):
 
     return min(candidates, key=lambda asteroid: asteroid["dv"])
 
-def select_priority_asteroid(candidates, mission, fuel_threshold=4000):
+def select_priority_asteroid(candidates, mission, fuel_threshold=4000, improved=False):
     if not candidates:
         return None
 
@@ -34,6 +35,26 @@ def select_priority_asteroid(candidates, mission, fuel_threshold=4000):
     ]
 
     if priority_candidates:
+        if improved:
+            return max(
+                priority_candidates,
+                key=calculate_candidate_score
+            )
+
         return select_best_asteroid(priority_candidates)
 
     return select_best_asteroid(candidates)
+
+def calculate_candidate_score(asteroid):
+    mass = asteroid["mass"]
+    transfer_days = asteroid["transfer_days"]
+    dv = asteroid["dv"]
+
+    mining_days = max(1, math.ceil(mass * 30))
+    total_days = transfer_days + mining_days
+
+    fuel_penalty = 1 + dv / 10000
+
+    score = mass / (total_days * fuel_penalty)
+
+    return score
