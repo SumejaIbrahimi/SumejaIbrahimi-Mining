@@ -67,3 +67,60 @@ def mutate(individual, mutation_rate=0.2): # secili gjen ka 20% mundesi te ndrys
         individual[2] = random.randint(1000, 10000)
 
     return individual
+
+def run_genetic_algorithm(generations=5):
+    random.seed(42)
+
+    population = create_population()
+
+    best_individual = None
+    best_score = -1
+
+    for generation in range(generations):
+
+        fitness_scores = [
+            evaluate_fitness(individual)
+            for individual in population
+        ]
+
+        generation_best_index = max(
+            range(len(population)),
+            key=lambda i: fitness_scores[i]
+        )
+
+        generation_best_score = fitness_scores[
+            generation_best_index
+        ]
+
+        if generation_best_score > best_score:
+            best_score = generation_best_score
+            best_individual = population[
+                generation_best_index
+            ].copy()
+
+        print(f"\n--- Gjenerata {generation + 1} ---")
+        print("Score i gjenerates:", generation_best_score)
+        print("Score me i mire:", best_score)
+        print("Individi me i mire:", best_individual)
+
+        new_population = [best_individual.copy()]
+
+        while len(new_population) < POPULATION_SIZE:
+            parent1 = select_parent(population, fitness_scores)
+            parent2 = select_parent(population, fitness_scores)
+
+            child = crossover(parent1, parent2)
+            child = mutate(child)
+
+            new_population.append(child)
+
+        population = new_population
+
+    return best_individual, best_score
+
+if __name__ == "__main__":
+    best_individual, best_score = run_genetic_algorithm()
+
+    print("\n--- Rezultati final i GA ---")
+    print("Parametrat me te mire:", best_individual)
+    print("Score maksimal:", best_score)
