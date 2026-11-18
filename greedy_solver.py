@@ -72,7 +72,7 @@ if __name__ == "__main__":
         start_id=300,
         limit=2000,
         fuel_threshold=5000,
-        improved=False,
+        improved=True,
         improved_fuel=True
     )
 
