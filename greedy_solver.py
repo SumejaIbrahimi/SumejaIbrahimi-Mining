@@ -1,4 +1,4 @@
-from mission import initialize_mission, mine_asteroid
+from mission import (initialize_mission, mine_asteroid, calculate_mining_days)
 from find_reachable import search_multiple_transfers, esa, udp
 from greedy import select_priority_asteroid
 import math
@@ -9,7 +9,8 @@ def run_greedy(start_id=5,
                 fuel_threshold=4000,
                 improved=False,
                 improved_fuel=False,
-                transfer_days=None):
+                transfer_days=None,
+                partial_mining=False):
     mission = initialize_mission(start_id)
 
     while mission["current_day"] < 1827:
@@ -30,10 +31,16 @@ def run_greedy(start_id=5,
         # Kontrollojme qe edhe minimi te perfundoje me kohe
         candidates = [
             asteroid for asteroid in candidates
-            if asteroid["arrival_day"] + max(
-                1, math.ceil(asteroid["mass"] * 30)
+            if calculate_mining_days(
+                asteroid, partial_mining
+            ) > 0
+            and asteroid["arrival_day"] + calculate_mining_days(
+                asteroid, partial_mining
             ) <= 1827
         ]
+
+        if not candidates:
+            break
 
         if not candidates:
             break
@@ -46,7 +53,9 @@ def run_greedy(start_id=5,
             improved_fuel=improved_fuel
             )
 
-        mining_days = max(1, math.ceil(best["mass"] * 30))
+        mining_days = calculate_mining_days(
+            best, partial_mining
+        )
 
         # Perditesimi pas udhetimit
         mission["remaining_dv"] -= best["dv"]
@@ -76,7 +85,7 @@ if __name__ == "__main__":
         fuel_threshold=5000,
         improved=False,
         improved_fuel=False,
-        transfer_days=list(range(10, 111, 10))
+        partial_mining=True
     )
 
     print("\n--- Rezultati i misionit ---")

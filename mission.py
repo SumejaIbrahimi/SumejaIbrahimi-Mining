@@ -1,3 +1,5 @@
+import math
+
 def initialize_mission(start_id=5):
     return {
         "current_id": start_id,
@@ -32,3 +34,15 @@ def mine_asteroid(mission, asteroid, mining_days):
     mission["current_day"] += mining_days
 
     return mined_mass
+
+def calculate_mining_days(asteroid, partial_mining=False):
+    full_days = max(1, math.ceil(asteroid["mass"] * 30))
+
+    if not partial_mining:
+        return full_days
+
+    remaining_days = math.floor(
+        1827 - asteroid["arrival_day"]
+    )
+
+    return max(0, min(full_days, remaining_days))
