@@ -3,6 +3,7 @@ import pykep as pk
 from dataclasses import dataclass
 import math
 import json
+import time
 
 from mission import calculate_mining_days
 from find_reachable import search_multiple_transfers, esa, udp
@@ -253,27 +254,338 @@ def validate_route(state, verbose=False):
 
     return official_score
 
+def apply_candidate(state, candidate, mining_days):
+
+    asteroid_id = candidate["id"]
+    arrival_day = candidate["arrival_day"]
+    dv = candidate["dv"]
+
+    if asteroid_id in state.visited_asteroids:
+        return None
+
+    if not math.isfinite(dv) or dv < 0:
+        return None
+
+    if dv > state.remaining_dv:
+        return None
+
+    if not math.isfinite(arrival_day):
+        return None
+
+    if arrival_day - state.current_day < 0.1:
+        return None
+
+    if not 1 <= mining_days <= 60:
+        return None
+
+    if arrival_day + mining_days > 1827:
+        return None
+
+    remaining_dv = state.remaining_dv - dv
+
+    material = candidate["material"]
+    mass = candidate["mass"]
+
+    mined_mass = min(mass, mining_days / 30.0)
+
+    materials = list(state.collected_materials)
+
+    if material == 3:
+        remaining_dv = min(
+            10000.0,
+            remaining_dv + mined_mass * 10000
+        )
+    else:
+        materials[material] += mined_mass
+
+    return BeamState(
+        current_id=asteroid_id,
+        current_day=arrival_day + mining_days,
+        remaining_dv=remaining_dv,
+        collected_materials=tuple(materials),
+        visited_asteroids=(
+            state.visited_asteroids | {asteroid_id}
+        ),
+        route=state.route + (
+            RouteStop(
+                asteroid_id,
+                arrival_day,
+                mining_days
+            ),
+        )
+    )
+
+def expand_state(state, limit=2000,
+                 transfer_days=None,
+                 partial_mining=True):
+
+    candidates = search_multiple_transfers(
+        start_id=state.current_id,
+        departure_day=state.current_day,
+        available_dv=state.remaining_dv,
+        visited_asteroids=state.visited_asteroids,
+        limit=limit,
+        transfer_days=transfer_days
+    )
+
+    children = []
+
+    for candidate in candidates:
+
+        mining_days = calculate_mining_days(
+            candidate,
+            partial_mining
+        )
+
+        child = apply_candidate(
+            state,
+            candidate,
+            mining_days
+        )
+
+        if child is not None:
+            children.append(child)
+
+    return children
+
+def rank_state(state, target):
+
+    deficit = sum(
+        max(0.0, target - amount)
+        for amount in state.collected_materials
+    )
+
+    fuel_fraction = state.remaining_dv / 10000.0
+
+    remaining_days = 1827 - state.current_day
+
+    time_fraction = remaining_days / 1827.0
+
+    rank = (
+        -deficit
+        + 0.25 * fuel_fraction
+        + 0.25 * time_fraction
+    )
+
+    return rank
+
+def select_children(children, target, branch_factor=6):
+
+    ranked = sorted(
+        children,
+        key=lambda child: rank_state(child, target),
+        reverse=True
+    )
+
+    selected = []
+    destination_counts = {}
+
+    # Ruajme diversitetin e materialeve
+    for material in range(4):
+
+        for child in ranked:
+
+            if len(selected) >= branch_factor:
+                return selected
+
+            child_material = int(
+                udp.asteroid_materials_types[child.current_id]
+            )
+
+            if child_material == material:
+
+                selected.append(child)
+
+                destination_counts[child.current_id] = (
+                    destination_counts.get(child.current_id, 0) + 1
+                )
+
+                break
+
+    # Plotesojme vendet e mbetura sipas rank-ut
+    for child in ranked:
+
+        if len(selected) >= branch_factor:
+            break
+
+        if child in selected:
+            continue
+
+        count = destination_counts.get(child.current_id, 0)
+
+        if count >= 2:
+            continue
+
+        selected.append(child)
+
+        destination_counts[child.current_id] = count + 1
+
+    return selected
+
+def select_beam(states, target, beam_width=4):
+
+    ranked = sorted(
+        states,
+        key=lambda state: rank_state(state, target),
+        reverse=True
+    )
+
+    selected = []
+    used_destinations = set()
+
+    # Fillimisht zgjedhim destinacione te ndryshme
+    for state in ranked:
+
+        if len(selected) >= beam_width:
+            break
+
+        if state.current_id in used_destinations:
+            continue
+
+        selected.append(state)
+        used_destinations.add(state.current_id)
+
+    # Plotesojme vendet e mbetura
+    for state in ranked:
+
+        if len(selected) >= beam_width:
+            break
+
+        if state not in selected:
+            selected.append(state)
+
+    return selected
+
+def run_beam_search(
+    start_index=12,
+    beam_width=4,
+    branch_factor=6,
+    limit=2000,
+    max_scans=64,
+    transfer_days=None,
+    partial_mining=True
+):
+
+    start_time = time.perf_counter()
+
+    baseline_states = load_and_replay_baseline()
+
+    best_state = baseline_states[-1]
+    best_score = validate_route(best_state)
+
+    beam = [baseline_states[start_index]]
+
+    scans = 0
+    iteration = 0
+
+    while beam and scans < max_scans:
+
+        iteration += 1
+
+        target = best_score + 0.25
+
+        next_states = []
+
+        for state in beam:
+
+            if scans >= max_scans:
+                break
+
+            if state.current_day >= 1827:
+                continue
+
+            children = expand_state(
+                state,
+                limit=limit,
+                transfer_days=transfer_days,
+                partial_mining=partial_mining
+            )
+
+            scans += 1
+
+            # Kontrollojme score para eliminimit
+            for child in children:
+
+                score = min(child.collected_materials)
+
+                if score > best_score + 1e-8:
+
+                    official_score = validate_route(child)
+
+                    if official_score > best_score + 1e-8:
+
+                        best_state = child
+                        best_score = official_score
+
+                        print(
+                            "Score i ri me i mire:",
+                            best_score
+                        )
+
+            # Zgjedhim deget qe do te vazhdojne
+            continuing_children = [
+                child for child in children
+                if child.current_day < 1827
+            ]
+
+            selected = select_children(
+                continuing_children,
+                target,
+                branch_factor
+            )
+
+            next_states.extend(selected)
+
+        beam = select_beam(
+            next_states,
+            target,
+            beam_width
+        )
+
+        print(
+            f"Iteracioni: {iteration} | "
+            f"Beam: {len(beam)} | "
+            f"Scans: {scans} | "
+            f"Best score: {best_score:.6f}"
+        )
+
+    elapsed = time.perf_counter() - start_time
+
+    print("\n--- Statistikat e Beam Search ---")
+    print("Iteracionet:", iteration)
+    print("Skanimet:", scans)
+    print("Koha:", round(elapsed, 2), "sekonda")
+
+    return best_state
+
 if __name__ == "__main__":
 
-    states = load_and_replay_baseline()
+    result = run_beam_search(
+        start_index=12,
+        beam_width=4,
+        branch_factor=6,
+        limit=2000,
+        max_scans=64,
+        partial_mining=True
+    )
 
-    start_state = states[12]
-    final_state = states[-1]
+    print("\n--- Rezultati final i Beam Search ---")
 
-    print("\n--- Gjendja fillestare per Beam Search ---")
-    print("Asteroidi:", start_state.current_id)
-    print("Dita:", start_state.current_day)
-    print("Delta-v:", start_state.remaining_dv)
-    print("Materialet:", start_state.collected_materials)
+    print(
+        "Asteroidet:",
+        [stop.asteroid_id for stop in result.route]
+    )
 
-    print("\n--- Baseline i rikrijuar ---")
-    print("Numri i gjendjeve:", len(states))
-    print("Dita finale:", final_state.current_day)
-    print("Delta-v:", final_state.remaining_dv)
-    print("Materialet:", final_state.collected_materials)
+    print("Materialet:", result.collected_materials)
+    print("Dita finale:", result.current_day)
+    print("Delta-v:", result.remaining_dv)
+
+    print("Score:", min(result.collected_materials))
+
+    print("\n--- Validimi zyrtar ---")
 
     official_score = validate_route(
-        final_state,
+        result,
         verbose=True
     )
 
