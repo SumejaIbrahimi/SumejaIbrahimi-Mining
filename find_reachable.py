@@ -56,11 +56,13 @@ def search_multiple_transfers(
     departure_day,
     available_dv,
     visited_asteroids,
-    limit=500
+    limit=500,
+    transfer_days=None
 ):
     candidates = []
 
-    transfer_days = [20, 40, 60, 80, 100]
+    if transfer_days is None:
+      transfer_days = [20, 40, 60, 80, 100]
 
     for days in transfer_days:
         arrival_day = departure_day + days
