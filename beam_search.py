@@ -527,7 +527,14 @@ def run_beam_search(
                 child for child in children
                 if child.current_day < 1827
             ]
-
+            
+            print(
+    f"DEBUG | Asteroidi: {state.current_id} | "
+    f"Dita: {state.current_day:.1f} | "
+    f"DV: {state.remaining_dv:.1f} | "
+    f"Kandidate: {len(children)} | "
+    f"Per vazhdim: {len(continuing_children)}"
+)
             selected = select_children(
                 continuing_children,
                 target,
