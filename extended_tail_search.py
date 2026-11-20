@@ -42,6 +42,27 @@ def can_still_improve(
     return minimum_days <= deadline - state.current_day + SCORE_TOLERANCE
 
 
+def saved_continuation(state, saved_states):
+    prefix_index = len(state.route) - 1
+    if 0 <= prefix_index < len(saved_states) - 1 and state == saved_states[prefix_index]:
+        return saved_states[prefix_index + 1].route[-1]
+    return None
+
+
+def ordered_transfers(alternatives, saved_stop):
+    """Yield the exact saved stop first, then the ordinary transfer options."""
+    if saved_stop is not None:
+        yield saved_stop.asteroid_id, saved_stop.arrival_day, saved_stop.mining_days
+    for asteroid_id, arrival_day in alternatives:
+        yield asteroid_id, arrival_day, None
+
+
+def mining_options(preferred_stay, latest_stay, excluded_stay=None):
+    for stay in chain(range(preferred_stay, latest_stay + 1), range(1, preferred_stay)):
+        if stay != excluded_stay:
+            yield stay
+
+
 def run_extended_tail_search(replace_stops=4, max_nodes=1000, max_seconds=15.0):
     """Return the saved incumbent or a strictly better ESA-validated route."""
     if replace_stops not in (4, 5):
@@ -126,35 +147,54 @@ def run_extended_tail_search(replace_stops=4, max_nodes=1000, max_seconds=15.0):
                 len(materials[material]),
             ),
         )
-        for material in material_order:
-            for asteroid_id, mass in materials[material]:
-                if asteroid_id in state.visited_asteroids:
-                    continue
-                for days in TRANSFER_DAYS:
-                    if nodes >= max_nodes or probes >= max_nodes or time.perf_counter() >= stop_at:
-                        return
-                    arrival_day = state.current_day + days
-                    latest_stay = min(60, math.floor(deadline - arrival_day))
-                    if latest_stay < 1:
-                        break
-                    probes += 1
-                    dv = transfer_dv(state.current_id, state.current_day, asteroid_id, arrival_day)
-                    if dv > state.remaining_dv:
+        def alternatives():
+            for material in material_order:
+                for asteroid_id, _ in materials[material]:
+                    if asteroid_id in state.visited_asteroids:
                         continue
-                    candidate = {
-                        "id": asteroid_id, "mass": mass, "material": material,
-                        "arrival_day": arrival_day, "dv": dv,
-                    }
-                    full_stay = calculate_mining_days(candidate)
-                    preferred_stay = min(full_stay, latest_stay)
-                    # Try extraction first, then all other legal integer stays.
-                    stays = chain(range(preferred_stay, latest_stay + 1), range(1, preferred_stay))
-                    for mining_days in stays:
-                        if nodes >= max_nodes or time.perf_counter() >= stop_at:
-                            return
-                        child = apply_candidate(state, candidate, mining_days)
-                        if child is not None:
-                            visit(child, remaining_stops - 1)
+                    for days in TRANSFER_DAYS:
+                        arrival_day = state.current_day + days
+                        if deadline - arrival_day < 1:
+                            break
+                        yield asteroid_id, arrival_day
+
+        saved_stop = saved_continuation(state, states)
+        saved_leg = None if saved_stop is None else (saved_stop.asteroid_id, saved_stop.arrival_day)
+        saved_dv = None
+        for asteroid_id, arrival_day, exact_stay in ordered_transfers(alternatives(), saved_stop):
+            if nodes >= max_nodes or probes >= max_nodes or time.perf_counter() >= stop_at:
+                return
+            if exact_stay is None and (asteroid_id, arrival_day) == saved_leg:
+                dv = saved_dv
+            else:
+                probes += 1
+                dv = transfer_dv(state.current_id, state.current_day, asteroid_id, arrival_day)
+                if exact_stay is not None:
+                    saved_dv = dv
+            if dv > state.remaining_dv:
+                continue
+
+            candidate = {
+                "id": asteroid_id,
+                "mass": float(udp.asteroid_masses[asteroid_id]),
+                "material": int(udp.asteroid_materials_types[asteroid_id]),
+                "arrival_day": arrival_day,
+                "dv": dv,
+            }
+            if exact_stay is not None:
+                stays = (exact_stay,)
+            else:
+                latest_stay = min(60, math.floor(deadline - arrival_day))
+                preferred_stay = min(calculate_mining_days(candidate), latest_stay)
+                excluded_stay = saved_stop.mining_days if (asteroid_id, arrival_day) == saved_leg else None
+                stays = mining_options(preferred_stay, latest_stay, excluded_stay)
+
+            for mining_days in stays:
+                if nodes >= max_nodes or time.perf_counter() >= stop_at:
+                    return
+                child = apply_candidate(state, candidate, mining_days)
+                if child is not None:
+                    visit(child, remaining_stops - 1)
 
     visit(seed, replace_stops)
     cache_stats = transfer_dv.cache_info()
@@ -169,10 +209,32 @@ def run_extended_tail_search(replace_stops=4, max_nodes=1000, max_seconds=15.0):
     return best_state
 
 
+def test_incumbent_first_ordering():
+    """Exercise the production ordering helpers without PyKEP or a search."""
+    from types import SimpleNamespace
+
+    seed = SimpleNamespace(route=("prefix",), fuel=100)
+    stop = SimpleNamespace(asteroid_id=332, arrival_day=1583.25, mining_days=2.0)
+    saved_states = [seed, SimpleNamespace(route=("prefix", stop), fuel=200)]
+    alternatives = [(10, 1543), (332, 1583.25), (332, 1603)]
+    continuation = saved_continuation(seed, saved_states)
+    transfers = list(ordered_transfers(alternatives, continuation))
+    assert transfers == [(332, 1583.25, 2.0), *(pair + (None,) for pair in alternatives)]
+    assert list(mining_options(3, 4, continuation.mining_days)) == [3, 4, 1]
+    different_state = SimpleNamespace(route=seed.route, fuel=99)
+    assert saved_continuation(different_state, saved_states) is None
+    assert list(ordered_transfers(alternatives, None)) == transfers[1:]
+    print("Incumbent-first ordering test passed.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--replace-stops", type=int, choices=(4, 5), default=4)
     parser.add_argument("--max-nodes", type=int, default=1000, help="Cap on states and on probes.")
     parser.add_argument("--max-seconds", type=float, default=15.0, help="Search time budget.")
+    parser.add_argument("--test-ordering", action="store_true", help="Run only the fast ordering test.")
     args = parser.parse_args()
-    run_extended_tail_search(args.replace_stops, args.max_nodes, args.max_seconds)
+    if args.test_ordering:
+        test_incumbent_first_ordering()
+    else:
+        run_extended_tail_search(args.replace_stops, args.max_nodes, args.max_seconds)
