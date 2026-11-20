@@ -363,7 +363,7 @@ def rank_state(state, target):
 
     rank = (
         -deficit
-        + 0.25 * fuel_fraction
+        + 1.0 * fuel_fraction
         + 0.25 * time_fraction
     )
 
