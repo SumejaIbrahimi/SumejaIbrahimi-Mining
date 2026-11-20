@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import math
 import json
 import time
+from contextlib import redirect_stdout
+from io import StringIO
 
 from mission import calculate_mining_days
 from find_reachable import search_multiple_transfers, esa, udp
@@ -138,7 +140,7 @@ def load_and_replay_baseline(
 
     return states
 
-def validate_route(state, verbose=False):
+def validate_route(state, verbose=False, *, require_full_route=False):
 
     route = state.route
 
@@ -239,7 +241,22 @@ def validate_route(state, verbose=False):
 
     chromosome = esa["convert_to_chromosome"](solution)
 
-    fitness = udp.fitness(chromosome, verbose=verbose)
+    if require_full_route:
+        trace = StringIO()
+        with redirect_stdout(trace):
+            fitness = udp.fitness(chromosome, verbose=True)
+        output = trace.getvalue()
+        credited_ids = [
+            int(line.split("\t", 1)[0])
+            for line in output.splitlines()
+            if "\t" in line and line.split("\t", 1)[0].isdigit()
+        ]
+        if credited_ids != ids[1:]:
+            raise ValueError("The ESA evaluator did not credit the full route.")
+        if verbose:
+            print(output, end="")
+    else:
+        fitness = udp.fitness(chromosome, verbose=verbose)
 
     official_score = float(fitness[0])
     internal_score = min(materials)
@@ -467,17 +484,26 @@ def run_beam_search(
     limit=2000,
     max_scans=64,
     transfer_days=None,
-    partial_mining=True
+    partial_mining=True,
+    *,
+    seed_state=None,
+    incumbent_state=None
 ):
 
     start_time = time.perf_counter()
 
-    baseline_states = load_and_replay_baseline()
+    if (seed_state is None) != (incumbent_state is None):
+        raise ValueError("Supply both seed_state and incumbent_state.")
 
-    best_state = baseline_states[-1]
-    best_score = validate_route(best_state)
+    custom_seed = seed_state is not None
+    if not custom_seed:
+        baseline_states = load_and_replay_baseline()
+        seed_state = baseline_states[start_index]
+        incumbent_state = baseline_states[-1]
 
-    beam = [baseline_states[start_index]]
+    best_state = incumbent_state
+    best_score = validate_route(best_state, require_full_route=custom_seed)
+    beam = [seed_state]
 
     scans = 0
     iteration = 0
@@ -514,17 +540,22 @@ def run_beam_search(
 
                 if score > best_score + 1e-8:
 
-                    official_score = validate_route(child)
+                    try:
+                        official_score = validate_route(
+                            child, require_full_route=custom_seed
+                        )
+                    except ValueError:
+                        if not custom_seed:
+                            raise
+                        continue
 
                     if official_score > best_score + 1e-8:
 
                         best_state = child
                         best_score = official_score
 
-                        print(
-                            "Score i ri me i mire:",
-                            best_score
-                        )
+                        if not custom_seed:
+                            print("Score i ri me i mire:", best_score)
 
             # Zgjedhim deget qe do te vazhdojne
             continuing_children = [
@@ -568,6 +599,47 @@ def run_beam_search(
     print("Koha:", round(elapsed, 2), "sekonda")
 
     return best_state
+
+
+def run_tail_search():
+    """Search for a validated improvement after the saved stop at asteroid 332."""
+    saved_score = 3.846180920595038
+    tolerance = 1e-8
+    states = load_and_replay_baseline("beam_best_result.json")
+    if len(states) <= 17:
+        raise ValueError("The saved winner is missing the tail-search seed.")
+
+    seed = states[17]
+    incumbent = states[-1]
+    if seed.current_id != 332 or seed.current_day != 1606:
+        raise ValueError("Expected asteroid 332, ready to depart on day 1606.")
+
+    official_score = validate_route(incumbent, require_full_route=True)
+    if not math.isclose(official_score, saved_score, rel_tol=0, abs_tol=tolerance):
+        raise ValueError("The saved winner's official score differs from the expected score.")
+
+    winner = run_beam_search(
+        beam_width=8,
+        branch_factor=6,
+        limit=2000,
+        max_scans=32,
+        partial_mining=True,
+        seed_state=seed,
+        incumbent_state=incumbent,
+    )
+    if winner is incumbent:
+        return incumbent
+
+    if winner.route[:len(seed.route)] != seed.route:
+        raise ValueError("The tail-search winner changed the saved prefix.")
+
+    official_score = validate_route(winner, require_full_route=True)
+    if official_score <= saved_score + tolerance:
+        return incumbent
+
+    print("New official tail-search winner:", official_score)
+    return winner
+
 
 if __name__ == "__main__":
 
