@@ -26,13 +26,16 @@ def minimum_mining_days(amount, target, mining_rate_days):
     return days
 
 
-def scan_order(state, order, deposits, min_days, deadline, transfer_dv):
+def scan_order(
+    state, order, deposits, min_days, deadline, transfer_dv,
+    *, flight_durations=TRANSFER_DAYS,
+):
     """Yield once per transfer probe, with any complete routes from that probe."""
     material, *remaining_order = order
     minimum_stay = min_days[material]
     remaining_time = sum(min_days[ore] + TRANSFER_DAYS[0] for ore in remaining_order)
 
-    for flight_days in TRANSFER_DAYS:
+    for flight_days in flight_durations:
         arrival_day = state.current_day + flight_days
         latest_stay = math.floor(deadline - arrival_day - remaining_time)
         if minimum_stay > latest_stay:
@@ -74,6 +77,29 @@ def scan_order(state, order, deposits, min_days, deadline, transfer_dv):
                     )
             else:
                 yield children
+
+
+def scan_first_leg_durations(seed, order, deposits, min_days, deadline, transfer_dv,
+                             probes_by_duration):
+    """Round-robin independent depth-first searches fixed to one first-leg duration."""
+    active = deque(
+        (
+            days,
+            scan_order(
+                seed, order, deposits, min_days, deadline, transfer_dv,
+                flight_durations=(days,),
+            ),
+        )
+        for days in TRANSFER_DAYS
+    )
+    while active:
+        days, scan = active.popleft()
+        children = next(scan, None)
+        if children is None:
+            continue
+        probes_by_duration[days] += 1
+        active.append((days, scan))
+        yield children
 
 
 def run_three_stop_tail_search(limit=2000, max_lambert_solves=320_000):
@@ -129,8 +155,14 @@ def run_three_stop_tail_search(limit=2000, max_lambert_solves=320_000):
     # Take one probe per turn, including hits, to preserve round-robin scheduling.
     orders = list(permutations(range(3))) if all(deposits) else []
     scans_by_order = dict.fromkeys(orders, 0)
+    probes_by_duration = dict.fromkeys(TRANSFER_DAYS, 0)
     active = deque(
-        (order, scan_order(seed, order, deposits, min_days, deadline, transfer_dv))
+        (
+            order,
+            scan_first_leg_durations(
+                seed, order, deposits, min_days, deadline, transfer_dv, probes_by_duration
+            ),
+        )
         for order in orders
     )
     best_state, best_score = incumbent, max(target, official_score)
@@ -168,6 +200,9 @@ def run_three_stop_tail_search(limit=2000, max_lambert_solves=320_000):
     material_names = ("Gold", "Platinum", "Nickel")
     for order, count in scans_by_order.items():
         print(" -> ".join(material_names[ore] for ore in order), count)
+    print("Transfer probes by first-leg duration (including cache hits):")
+    for days, count in probes_by_duration.items():
+        print(f"  {days} days: {count}")
     print(f"Official candidate validation attempts: {validation_attempts}")
     print(f"Candidate routes rejected during official validation: {rejected}")
     if best_state is incumbent:
