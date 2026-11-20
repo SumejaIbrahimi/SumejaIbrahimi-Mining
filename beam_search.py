@@ -443,7 +443,7 @@ def select_children(children, target, branch_factor=6):
 
     return selected
 
-def select_beam(states, target, beam_width=4):
+def select_beam(states, target, beam_width=4, *, on_timing_reserve=None):
 
     ranked = sorted(
         states,
@@ -466,6 +466,23 @@ def select_beam(states, target, beam_width=4):
         selected.append(state)
         used_destinations.add(state.current_id)
 
+    if on_timing_reserve is not None and beam_width > 1 and len(selected) == beam_width:
+        normal_pick = selected[-1]
+        kept_by_destination = {state.current_id: state for state in selected[:-1]}
+        normal_rank = rank_state(normal_pick, target)
+        for state in ranked:
+            if rank_state(state, target) <= normal_rank:
+                break
+            kept = kept_by_destination.get(state.current_id)
+            if (
+                kept is not None
+                and state.visited_asteroids == kept.visited_asteroids
+                and state.current_day != kept.current_day
+            ):
+                selected[-1] = state
+                on_timing_reserve()
+                break
+
     # Plotesojme vendet e mbetura
     for state in ranked:
 
@@ -487,7 +504,8 @@ def run_beam_search(
     partial_mining=True,
     *,
     seed_state=None,
-    incumbent_state=None
+    incumbent_state=None,
+    timing_reserve=False
 ):
 
     start_time = time.perf_counter()
@@ -507,6 +525,11 @@ def run_beam_search(
 
     scans = 0
     iteration = 0
+    timing_reserve_activations = 0
+
+    def record_timing_reserve():
+        nonlocal timing_reserve_activations
+        timing_reserve_activations += 1
 
     while beam and scans < max_scans:
 
@@ -581,7 +604,8 @@ def run_beam_search(
         beam = select_beam(
             next_states,
             target,
-            beam_width
+            beam_width,
+            on_timing_reserve=record_timing_reserve if timing_reserve else None,
         )
 
         print(
@@ -596,6 +620,8 @@ def run_beam_search(
     print("\n--- Statistikat e Beam Search ---")
     print("Iteracionet:", iteration)
     print("Skanimet:", scans)
+    if timing_reserve:
+        print(f"Timing reserve activations: {timing_reserve_activations}/{iteration} iterations")
     print("Koha:", round(elapsed, 2), "sekonda")
 
     return best_state
@@ -626,6 +652,7 @@ def run_tail_search():
         partial_mining=True,
         seed_state=seed,
         incumbent_state=incumbent,
+        timing_reserve=True,
     )
     if winner is incumbent:
         return incumbent
