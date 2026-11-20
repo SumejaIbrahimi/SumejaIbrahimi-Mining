@@ -5,6 +5,7 @@ from collections import deque
 from functools import lru_cache
 from itertools import permutations
 import math
+from operator import index
 
 from beam_search import apply_candidate, calculate_transfer_dv, load_and_replay_baseline
 from beam_search import validate_route
@@ -42,7 +43,8 @@ def scan_order(state, order, deposits, min_days, deadline, transfer_dv):
                 continue
 
             dv = transfer_dv(
-                state.current_id, asteroid_id, state.current_day, arrival_day
+                index(state.current_id), float(state.current_day),
+                index(asteroid_id), float(arrival_day),
             )
             if not math.isfinite(dv) or not 0 <= dv <= state.remaining_dv:
                 yield ()
@@ -114,7 +116,12 @@ def run_three_stop_tail_search(limit=2000, max_lambert_solves=320_000):
     @lru_cache(maxsize=TRANSFER_CACHE_SIZE)
     def transfer_dv(source_id, departure_day, target_id, arrival_day):
         try:
-            dv = calculate_transfer_dv(source_id, target_id, departure_day, arrival_day)
+            dv = calculate_transfer_dv(
+                start_id=source_id,
+                target_id=target_id,
+                departure_day=departure_day,
+                arrival_day=arrival_day,
+            )
         except (RuntimeError, ValueError):
             return math.inf
         return dv if math.isfinite(dv) and dv >= 0 else math.inf
