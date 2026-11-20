@@ -2,6 +2,7 @@
 
 import argparse
 from collections import deque
+from functools import lru_cache
 from itertools import permutations
 import math
 
@@ -14,6 +15,7 @@ from mission import calculate_mining_days
 SAVED_SCORE = 3.846180920595038
 SCORE_TOLERANCE = 1e-8
 TRANSFER_DAYS = (20, 40, 60, 80, 100)
+TRANSFER_CACHE_SIZE = 65_536
 
 
 def minimum_mining_days(amount, target, mining_rate_days):
@@ -23,8 +25,8 @@ def minimum_mining_days(amount, target, mining_rate_days):
     return days
 
 
-def scan_order(state, order, deposits, min_days, deadline):
-    """Yield once per Lambert solve, with any complete routes from that solve."""
+def scan_order(state, order, deposits, min_days, deadline, transfer_dv):
+    """Yield once per transfer probe, with any complete routes from that probe."""
     material, *remaining_order = order
     minimum_stay = min_days[material]
     remaining_time = sum(min_days[ore] + TRANSFER_DAYS[0] for ore in remaining_order)
@@ -39,7 +41,7 @@ def scan_order(state, order, deposits, min_days, deadline):
             if asteroid_id in state.visited_asteroids:
                 continue
 
-            dv = calculate_transfer_dv(
+            dv = transfer_dv(
                 state.current_id, asteroid_id, state.current_day, arrival_day
             )
             if not math.isfinite(dv) or not 0 <= dv <= state.remaining_dv:
@@ -66,7 +68,7 @@ def scan_order(state, order, deposits, min_days, deadline):
                 yield ()
                 for child in children:
                     yield from scan_order(
-                        child, remaining_order, deposits, min_days, deadline
+                        child, remaining_order, deposits, min_days, deadline, transfer_dv
                     )
             else:
                 yield children
@@ -108,29 +110,41 @@ def run_three_stop_tail_search(limit=2000, max_lambert_solves=320_000):
     for ore_deposits in deposits:
         ore_deposits.sort(key=lambda deposit: (-deposit[1], deposit[0]))
 
-    # Interleave orders by solve so no single order consumes the shared budget.
+    # The catalog, gravitational parameter, and Lambert settings are fixed per run.
+    @lru_cache(maxsize=TRANSFER_CACHE_SIZE)
+    def transfer_dv(source_id, departure_day, target_id, arrival_day):
+        try:
+            dv = calculate_transfer_dv(source_id, target_id, departure_day, arrival_day)
+        except (RuntimeError, ValueError):
+            return math.inf
+        return dv if math.isfinite(dv) and dv >= 0 else math.inf
+
+    # Take one probe per turn, including hits, to preserve round-robin scheduling.
     orders = list(permutations(range(3))) if all(deposits) else []
     scans_by_order = dict.fromkeys(orders, 0)
     active = deque(
-        (order, scan_order(seed, order, deposits, min_days, deadline))
+        (order, scan_order(seed, order, deposits, min_days, deadline, transfer_dv))
         for order in orders
     )
     best_state, best_score = incumbent, max(target, official_score)
     solves = 0
+    validation_attempts = 0
     rejected = 0
     while active and solves < max_lambert_solves:
         order, scan = active.popleft()
         children = next(scan, None)
         if children is None:
             continue
-        solves += 1
-        scans_by_order[order] += 1
+        misses = transfer_dv.cache_info().misses
+        scans_by_order[order] += misses - solves
+        solves = misses
         active.append((order, scan))
 
         for child in children:
             # Allow for the validator's internal/official score agreement tolerance.
             if min(child.collected_materials) + SCORE_TOLERANCE <= best_score:
                 continue
+            validation_attempts += 1
             try:
                 score = validate_route(child, require_full_route=True)
             except ValueError:
@@ -139,11 +153,15 @@ def run_three_stop_tail_search(limit=2000, max_lambert_solves=320_000):
             if score > best_score:
                 best_state, best_score = child, score
 
-    print(f"Search Lambert solves: {solves}/{max_lambert_solves}")
-    print("Search stopped at the budget." if active else "Search space exhausted.")
+    cache_stats = transfer_dv.cache_info()
+    print(f"Transfer cache hits: {cache_stats.hits}")
+    print(f"Transfer cache misses: {cache_stats.misses}")
+    print(f"Actual search Lambert solves: {solves}/{max_lambert_solves}")
+    print("Lambert budget exhausted." if solves >= max_lambert_solves else "Search space exhausted.")
     material_names = ("Gold", "Platinum", "Nickel")
     for order, count in scans_by_order.items():
         print(" -> ".join(material_names[ore] for ore in order), count)
+    print(f"Official candidate validation attempts: {validation_attempts}")
     print(f"Candidate routes rejected during official validation: {rejected}")
     if best_state is incumbent:
         print(f"Saved official incumbent retained: {official_score}")
