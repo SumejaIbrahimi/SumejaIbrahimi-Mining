@@ -349,7 +349,6 @@ def expand_state(state, limit=2000,
     return children
 
 def rank_state(state, target):
-
     deficit = sum(
         max(0.0, target - amount)
         for amount in state.collected_materials
@@ -359,12 +358,17 @@ def rank_state(state, target):
 
     remaining_days = 1827 - state.current_day
 
+    fuel_weight = min(
+        1.0,
+        max(0.0, remaining_days / 200.0)
+    )
+
     time_fraction = remaining_days / 1827.0
 
     rank = (
         -deficit
-        + 1.0 * fuel_fraction
-        + 1.0 * time_fraction
+        + fuel_weight * fuel_fraction
+        + 0.25 * time_fraction
     )
 
     return rank
