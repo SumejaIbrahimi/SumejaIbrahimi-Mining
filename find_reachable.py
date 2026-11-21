@@ -1,4 +1,5 @@
 
+import math
 import runpy
 import numpy as np
 import pykep as pk
@@ -8,25 +9,75 @@ esa = runpy.run_path("spoc-mining-mine-the-belt.py")
 # E marrim objektin me t'dhenat e asteroideve
 udp = esa["udp"]
 
-def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv, visited_asteroids, limit=500):
+def shortlist_asteroids(start_id, arrival_epoch, flight_seconds, available_dv,
+                        excluded, budget, deficits):
+    """Rank the full catalog by proximity to the source's arrival-epoch orbit."""
+    if budget == 0:
+        return []
+    position, velocity = udp.asteroids[start_id].eph(arrival_epoch)
+    materials = udp.asteroid_materials_types
+    masses = udp.asteroid_masses
+    fuel_scale = max(1000.0, available_dv)
+
+    def priority(target_id):
+        target_position, target_velocity = udp.asteroids[target_id].eph(arrival_epoch)
+        geometry = (
+            math.dist(position, target_position) / flight_seconds
+            + math.dist(velocity, target_velocity)
+        )
+        material = int(materials[target_id])
+        mass = masses[target_id]
+        if material == 3:
+            # Approximate the usable refill after a transfer, capped by tank headroom.
+            headroom = 10000.0 - available_dv + min(geometry, available_dv)
+            utility = (min(mass * 10000.0, headroom) / 10000.0
+                       * (2.0 - available_dv / 10000.0))
+        else:
+            utility = min(mass, deficits[material]) + 0.25 * mass
+        return (-(1.0 + utility) / (1.0 + geometry / fuel_scale), target_id)
+
+    ranked = sorted(
+        (target_id for target_id in range(len(udp.asteroids)) if target_id not in excluded),
+        key=priority,
+    )
+    reserve = max(1, budget // 10) if budget > 1 and budget < len(ranked) else 0
+    if not reserve:
+        return ranked[:budget]
+    # Sample across materials and catalog IDs outside the entire top-budget group.
+    remainder = sorted(ranked[budget:], key=lambda target_id: (materials[target_id], target_id))
+    reserve = min(reserve, len(remainder))
+    sample = [remainder[(2 * i + 1) * len(remainder) // (2 * reserve)]
+              for i in range(reserve)]
+    return ranked[:budget - reserve] + sample
+
+
+def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv,
+                             visited_asteroids, limit=500, *, deficits=None, on_probes=None):
     reachable = []
 
     r1, v1 = udp.asteroids[start_id].eph(
         esa["T_START"].mjd2000 + departure_day
     )
-
-    for target_id in range(min(limit, len(udp.asteroids))):
-        if target_id == start_id or target_id in visited_asteroids:
-            continue
-
-        r2, v2 = udp.asteroids[target_id].eph(
-            esa["T_START"].mjd2000 + arrival_day
+    arrival_epoch = esa["T_START"].mjd2000 + arrival_day
+    flight_seconds = (arrival_day - departure_day) * pk.DAY2SEC
+    excluded = set(visited_asteroids) | {start_id}
+    target_ids = [
+        target_id for target_id in range(min(limit, len(udp.asteroids)))
+        if target_id not in excluded
+    ]
+    if deficits is not None:
+        target_ids = shortlist_asteroids(
+            start_id, arrival_epoch, flight_seconds, available_dv,
+            excluded, len(target_ids), deficits,
         )
+
+    for target_id in target_ids:
+        r2, v2 = udp.asteroids[target_id].eph(arrival_epoch)
 
         trajectory = pk.lambert_problem(
             r1=r1,
             r2=r2,
-            tof=(arrival_day - departure_day) * pk.DAY2SEC,
+            tof=flight_seconds,
             mu=udp.MU,
             cw=False,
             max_revs=0
@@ -49,6 +100,8 @@ def find_reachable_asteroids(start_id, departure_day, arrival_day, available_dv,
                 "mass": float(udp.asteroid_masses[target_id])
             })
 
+    if on_probes is not None:
+        on_probes(len(target_ids))
     return reachable
 
 def search_multiple_transfers(
@@ -57,7 +110,10 @@ def search_multiple_transfers(
     available_dv,
     visited_asteroids,
     limit=500,
-    transfer_days=None
+    transfer_days=None,
+    *,
+    deficits=None,
+    on_probes=None,
 ):
     candidates = []
 
@@ -76,7 +132,9 @@ def search_multiple_transfers(
             arrival_day=arrival_day,
             available_dv=available_dv,
             visited_asteroids=visited_asteroids,
-            limit=limit
+            limit=limit,
+            deficits=deficits,
+            on_probes=on_probes,
         )
 
         for asteroid in reachable:

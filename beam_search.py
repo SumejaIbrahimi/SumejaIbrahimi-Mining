@@ -334,7 +334,7 @@ def apply_candidate(state, candidate, mining_days):
 
 def expand_state(state, limit=2000,
                  transfer_days=None,
-                 partial_mining=True):
+                 partial_mining=True, *, deficits=None, on_probes=None):
 
     candidates = search_multiple_transfers(
         start_id=state.current_id,
@@ -342,7 +342,9 @@ def expand_state(state, limit=2000,
         available_dv=state.remaining_dv,
         visited_asteroids=state.visited_asteroids,
         limit=limit,
-        transfer_days=transfer_days
+        transfer_days=transfer_days,
+        deficits=deficits,
+        on_probes=on_probes,
     )
 
     children = []
@@ -505,9 +507,12 @@ def run_beam_search(
     *,
     seed_state=None,
     incumbent_state=None,
-    timing_reserve=False
+    timing_reserve=False,
+    candidate_strategy="id-prefix",
 ):
 
+    if candidate_strategy not in ("id-prefix", "catalog-wide"):
+        raise ValueError(f"Unknown candidate strategy: {candidate_strategy}")
     start_time = time.perf_counter()
 
     if (seed_state is None) != (incumbent_state is None):
@@ -526,6 +531,11 @@ def run_beam_search(
     scans = 0
     iteration = 0
     timing_reserve_activations = 0
+    lambert_probes = 0
+
+    def count_probes(count):
+        nonlocal lambert_probes
+        lambert_probes += count
 
     def record_timing_reserve():
         nonlocal timing_reserve_activations
@@ -547,11 +557,16 @@ def run_beam_search(
             if state.current_day >= 1827:
                 continue
 
+            deficits = None
+            if candidate_strategy == "catalog-wide":
+                deficits = tuple(max(0.0, target - mass) for mass in state.collected_materials)
             children = expand_state(
                 state,
                 limit=limit,
                 transfer_days=transfer_days,
-                partial_mining=partial_mining
+                partial_mining=partial_mining,
+                deficits=deficits,
+                on_probes=count_probes,
             )
 
             scans += 1
@@ -620,6 +635,7 @@ def run_beam_search(
     print("\n--- Statistikat e Beam Search ---")
     print("Iteracionet:", iteration)
     print("Skanimet:", scans)
+    print(f"Candidate strategy: {candidate_strategy} | Search Lambert probes: {lambert_probes}")
     if timing_reserve:
         print(f"Timing reserve activations: {timing_reserve_activations}/{iteration} iterations")
     print("Koha:", round(elapsed, 2), "sekonda")
@@ -669,14 +685,28 @@ def run_tail_search():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run Beam Search without writing results.")
+    parser.add_argument("--candidate-strategy", choices=("id-prefix", "catalog-wide"),
+                        default="id-prefix")
+    parser.add_argument("--incumbent", help="Use this saved route for both seed and incumbent")
+    args = parser.parse_args()
+    start_index = 12
+    seed_options = {}
+    if args.incumbent:
+        saved_states = load_and_replay_baseline(args.incumbent)
+        seed_options = {"seed_state": saved_states[start_index], "incumbent_state": saved_states[-1]}
 
     result = run_beam_search(
-        start_index=12,
+        start_index=start_index,
         beam_width=4,
         branch_factor=6,
         limit=2000,
         max_scans=64,
-        partial_mining=True
+        partial_mining=True,
+        candidate_strategy=args.candidate_strategy,
+        **seed_options,
     )
 
     print("\n--- Rezultati final i Beam Search ---")
@@ -696,7 +726,8 @@ if __name__ == "__main__":
 
     official_score = validate_route(
         result,
-        verbose=True
+        verbose=True,
+        require_full_route=bool(args.incumbent),
     )
 
     print("\nScore zyrtar:", official_score)
