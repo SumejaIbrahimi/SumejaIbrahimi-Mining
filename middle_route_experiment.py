@@ -1,5 +1,6 @@
 """Try a fixed-schedule replacement for asteroid 831 in the saved route."""
 
+import argparse
 from dataclasses import replace
 import json
 import math
@@ -15,9 +16,20 @@ CANDIDATE_LIMIT = 20
 TARGET_ID = 831
 
 
-def select_candidates(catalog, visited_ids):
-    """Rank eligible IDs by normalized semimajor axis, eccentricity and inclination."""
+def select_candidates(catalog, visited_ids, candidate_ids=None):
+    """Select eligible explicit IDs or rank by orbital proximity."""
     visited = set(visited_ids)
+    eligible = {
+        int(row[0]): row for row in catalog
+        if int(row[0]) not in visited and row[-1] == 1 and row[-2] >= MIN_DEPOSIT
+    }
+    if candidate_ids is not None:
+        requested = list(dict.fromkeys(candidate_ids))
+        invalid = [asteroid_id for asteroid_id in requested if asteroid_id not in eligible]
+        if invalid:
+            raise ValueError(f"Candidate IDs are unknown, visited, or ineligible: {invalid}")
+        return requested
+
     _, axis, eccentricity, inclination, *_ = catalog[TARGET_ID]
 
     def proximity(row):
@@ -31,11 +43,7 @@ def select_candidates(catalog, visited_ids):
             int(asteroid_id),
         )
 
-    eligible = [
-        row for row in catalog
-        if int(row[0]) not in visited and row[-1] == 1 and row[-2] >= MIN_DEPOSIT
-    ]
-    return [int(row[0]) for row in sorted(eligible, key=proximity)[:CANDIDATE_LIMIT]]
+    return [int(row[0]) for row in sorted(eligible.values(), key=proximity)[:CANDIDATE_LIMIT]]
 
 
 def replace_stop(route, candidate_id):
@@ -49,7 +57,14 @@ def replace_stop(route, candidate_id):
     return route[:index] + (replacement,) + route[index + 1:]
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--candidate-ids", nargs="+", type=int, metavar="ID",
+        help="test only these eligible asteroid IDs, in the supplied order",
+    )
+    args = parser.parse_args(argv)
+
     from beam_search import (
         apply_candidate,
         calculate_transfer_dv,
@@ -63,7 +78,12 @@ def main():
     saved_route = saved_states[-1].route
     index = next(i for i, stop in enumerate(saved_route) if stop.asteroid_id == TARGET_ID)
     catalog = esa["data"]
-    candidates = select_candidates(catalog, saved_states[-1].visited_asteroids)
+    try:
+        candidates = select_candidates(
+            catalog, saved_states[-1].visited_asteroids, args.candidate_ids,
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     def transfer(source, destination):
         return calculate_transfer_dv(

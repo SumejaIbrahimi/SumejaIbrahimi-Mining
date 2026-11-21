@@ -24,6 +24,15 @@ class MiddleRouteExperimentTests(unittest.TestCase):
         catalog[831] = (831, 100, 0, 0, 1.0, 1)
         self.assertEqual(select_candidates(catalog, {0, 831}), list(range(3, 23)))
 
+    def test_explicit_candidates_bypass_ranking_and_keep_requested_order(self):
+        catalog = [(i, 100 + i, 0, 0, 1, 1) for i in range(32)]
+        self.assertEqual(select_candidates(catalog, {0}, [31, 30, 4, 2]), [31, 30, 4, 2])
+
+    def test_explicit_candidates_must_be_eligible(self):
+        catalog = [(10, 100, 0, 0, 1, 1), (11, 100, 0, 0, 0.9, 1)]
+        with self.assertRaisesRegex(ValueError, r"\[10, 11, 12\]"):
+            select_candidates(catalog, {10}, [10, 11, 12])
+
     def test_replacement_preserves_entire_saved_schedule(self):
         saved = json.loads(SOURCE.read_text(encoding="utf-8"))
         route = tuple(Stop(*stop) for stop in zip(
