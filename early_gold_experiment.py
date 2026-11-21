@@ -17,10 +17,10 @@ TIME_LIMIT = 30
 TANK = 10000.0
 
 
-def export_result(state, official_score):
+def export_result(state, official_score, *, output=None, algorithm="Early gold local search"):
     """Create a new result using the catalog-wide route JSON schema."""
     result = {
-        "algorithm": "Early gold local search",
+        "algorithm": algorithm,
         "candidate_strategy": "catalog-wide",
         "score": min(state.collected_materials),
         "official_score": official_score,
@@ -32,7 +32,7 @@ def export_result(state, official_score):
         "final_day": state.current_day,
     }
     payload = json.dumps(result, indent=4, allow_nan=False)
-    with OUTPUT.open("x", encoding="utf-8") as file:
+    with (OUTPUT if output is None else output).open("x", encoding="utf-8") as file:
         file.write(payload + "\n")
 
 
@@ -57,18 +57,28 @@ def gold_candidates(udp, visited, epoch, mining_days):
 
 
 def run():
+    search(
+        SOURCE, OUTPUT, schedules=SCHEDULES, expected_score=4.151473504756365,
+        inner_stops=((1444, 210, 22), (772, 292, 10)), candidate_limit=8,
+        solve_limit=SOLVE_LIMIT, select_candidates=gold_candidates,
+        algorithm="Early gold local search",
+    )
+
+
+def search(source, output, *, schedules, expected_score, inner_stops, candidate_limit,
+           solve_limit, select_candidates, algorithm):
     from beam_search import (
         BeamState, RouteStop, apply_candidate, calculate_transfer_dv, esa, udp, validate_route,
     )
 
-    saved = json.loads(SOURCE.read_text(encoding="utf-8"))
+    saved = json.loads(source.read_text(encoding="utf-8"))
     route = tuple(RouteStop(*stop) for stop in zip(
         saved["visited_asteroids"], saved["arrival_times"], saved["mining_times"], strict=True,
     ))
     baseline = saved["official_score"]
-    if len(route) != LEG_COUNT + 1 or baseline != 4.151473504756365 or route[1:5] != (
-        RouteStop(410, 101, 29), RouteStop(1444, 210, 22),
-        RouteStop(772, 292, 10), RouteStop(1850, 382, 24),
+    if len(route) != LEG_COUNT + 1 or baseline != expected_score or route[1:5] != (
+        RouteStop(410, 101, 29), *(RouteStop(*stop) for stop in inner_stops),
+        RouteStop(1850, 382, 24),
     ):
         raise ValueError("The saved incumbent does not match the expected segment.")
 
@@ -77,7 +87,7 @@ def run():
     @lru_cache(maxsize=None)
     def transfer(source_id, departure_day, target_id, arrival_day):
         nonlocal probes
-        if probes >= SOLVE_LIMIT - 2 * LEG_COUNT:
+        if probes >= solve_limit - 2 * LEG_COUNT:
             raise RuntimeError("Lambert screening budget exhausted.")
         probes += 1
         return calculate_transfer_dv(
@@ -126,9 +136,9 @@ def run():
     epoch = esa["T_START"].mjd2000
     platinum = RouteStop(772, 294, 8)
     best = None
-    for day, stay in SCHEDULES:
-        candidates = gold_candidates(udp, incumbent.visited_asteroids, epoch + day, stay)
-        for asteroid_id in candidates[:8]:
+    for day, stay in schedules:
+        candidates = select_candidates(udp, incumbent.visited_asteroids, epoch + day, stay)
+        for asteroid_id in candidates[:candidate_limit]:
             label = f"Gold {asteroid_id} on day {day}, stay {stay}"
             state = states[1]
             for stop in (RouteStop(asteroid_id, day, stay), platinum, *route[4:]):
@@ -146,7 +156,7 @@ def run():
     if best is None:
         print("No improving trial reached official validation.")
         return
-    if len(best.route) != LEG_COUNT + 1 or probes + 2 * LEG_COUNT > SOLVE_LIMIT:
+    if len(best.route) != LEG_COUNT + 1 or probes + 2 * LEG_COUNT > solve_limit:
         raise RuntimeError("Full-route validation would exceed the Lambert budget.")
     score = validate_route(best, require_full_route=True)
     gold = best.route[2]
@@ -156,17 +166,21 @@ def run():
         print("The official score did not improve the incumbent.")
         return
     try:
-        export_result(best, score)
+        export_result(best, score, output=output, algorithm=algorithm)
     except FileExistsError:
-        print(f"{OUTPUT} already exists. Kept the existing result.")
+        print(f"{output} already exists. Kept the existing result.")
     else:
-        print(f"Saved {OUTPUT}")
+        print(f"Saved {output}")
 
 
 def main():
+    return run_worker("early_gold_experiment")
+
+
+def run_worker(module_name):
     try:
         worker = subprocess.run(
-            [sys.executable, "-B", "-u", "-c", "from early_gold_experiment import run; run()"],
+            [sys.executable, "-B", "-u", "-c", f"from {module_name} import run; run()"],
             timeout=TIME_LIMIT,
         )
     except subprocess.TimeoutExpired:
