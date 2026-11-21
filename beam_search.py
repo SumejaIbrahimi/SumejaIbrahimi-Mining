@@ -3,6 +3,7 @@ import pykep as pk
 from dataclasses import dataclass
 import math
 import json
+from pathlib import Path
 import time
 from contextlib import redirect_stdout
 from io import StringIO
@@ -643,6 +644,28 @@ def run_beam_search(
     return best_state
 
 
+CATALOG_WIDE_RESULT = Path("catalog_wide_best_result.json")
+
+
+def export_catalog_wide_result(state, official_score):
+    """Save a fully validated CLI result using the existing route JSON schema."""
+    data = {
+        "algorithm": "Beam Search",
+        "candidate_strategy": "catalog-wide",
+        "score": min(state.collected_materials),
+        "official_score": official_score,
+        "visited_asteroids": [stop.asteroid_id for stop in state.route],
+        "arrival_times": [stop.arrival_day for stop in state.route],
+        "mining_times": [stop.mining_days for stop in state.route],
+        "collected_materials": dict(enumerate(state.collected_materials)),
+        "remaining_dv": state.remaining_dv,
+        "final_day": state.current_day,
+    }
+    payload = json.dumps(data, indent=4, allow_nan=False)
+    with CATALOG_WIDE_RESULT.open("x", encoding="utf-8") as file:
+        file.write(payload + "\n")
+
+
 def run_tail_search():
     """Search for a validated improvement after the saved stop at asteroid 332."""
     saved_score = 3.846180920595038
@@ -687,11 +710,18 @@ def run_tail_search():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run Beam Search without writing results.")
+    parser = argparse.ArgumentParser(description="Run Beam Search with optional catalog-wide export.")
     parser.add_argument("--candidate-strategy", choices=("id-prefix", "catalog-wide"),
                         default="id-prefix")
     parser.add_argument("--incumbent", help="Use this saved route for both seed and incumbent")
+    parser.add_argument("--export-catalog-wide", action="store_true",
+                        help=f"Save the validated result to {CATALOG_WIDE_RESULT}")
     args = parser.parse_args()
+    if args.export_catalog_wide:
+        if args.candidate_strategy != "catalog-wide":
+            parser.error("--export-catalog-wide requires --candidate-strategy catalog-wide")
+        if CATALOG_WIDE_RESULT.exists() or CATALOG_WIDE_RESULT.is_symlink():
+            parser.error(f"{CATALOG_WIDE_RESULT} already exists")
     start_index = 12
     seed_options = {}
     if args.incumbent:
@@ -727,7 +757,13 @@ if __name__ == "__main__":
     official_score = validate_route(
         result,
         verbose=True,
-        require_full_route=bool(args.incumbent),
+        require_full_route=bool(args.incumbent or args.export_catalog_wide),
     )
 
     print("\nScore zyrtar:", official_score)
+    if args.export_catalog_wide:
+        try:
+            export_catalog_wide_result(result, official_score)
+        except FileExistsError:
+            parser.error(f"{CATALOG_WIDE_RESULT} already exists")
+        print(f"Saved {CATALOG_WIDE_RESULT}")
