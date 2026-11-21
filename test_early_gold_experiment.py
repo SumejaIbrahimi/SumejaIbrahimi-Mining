@@ -6,11 +6,12 @@ from io import StringIO
 import json
 from pathlib import Path
 import subprocess
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from early_gold_experiment import SOURCE, main, run
+from early_gold_experiment import OUTPUT, SOURCE, export_result, main, run
 
 
 class EarlyGoldExperimentTests(unittest.TestCase):
@@ -62,9 +63,43 @@ class EarlyGoldExperimentTests(unittest.TestCase):
             esa={"T_START": SimpleNamespace(mjd2000=0)},
             udp=SimpleNamespace(asteroid_materials_types=materials, asteroid_masses=masses),
         )
-        with patch.dict("sys.modules", {"beam_search": solver}), redirect_stdout(StringIO()) as output:
-            with patch("early_gold_experiment.gold_candidates", return_value=range(9000, 9009)) as select:
-                run()
+        with TemporaryDirectory() as directory:
+            destination = Path(directory) / OUTPUT
+            incumbent_copy = Path(directory) / SOURCE
+            incumbent_bytes = SOURCE.read_bytes()
+            incumbent_copy.write_bytes(incumbent_bytes)
+
+            def validate(state, *, require_full_route):
+                self.assertTrue(require_full_route)
+                self.assertFalse(destination.exists())
+                return 4.3899
+
+            solver.validate_route.side_effect = validate
+            with patch.dict("sys.modules", {"beam_search": solver}), redirect_stdout(StringIO()) as output:
+                with (
+                    patch("early_gold_experiment.SOURCE", incumbent_copy),
+                    patch("early_gold_experiment.OUTPUT", destination),
+                    patch("early_gold_experiment.gold_candidates", return_value=range(9000, 9009)) as select,
+                ):
+                    run()
+                    exported = destination.read_bytes()
+                    state = solver.validate_route.call_args.args[0]
+                    with self.assertRaises(FileExistsError):
+                        export_result(state, 4.39)
+                    self.assertEqual(destination.read_bytes(), exported)
+            self.assertEqual(incumbent_copy.read_bytes(), incumbent_bytes)
+        self.assertEqual(json.loads(exported), {
+            "algorithm": "Early gold local search",
+            "candidate_strategy": "catalog-wide",
+            "score": min(state.collected_materials),
+            "official_score": 4.3899,
+            "visited_asteroids": [stop.asteroid_id for stop in state.route],
+            "arrival_times": [stop.arrival_day for stop in state.route],
+            "mining_times": [stop.mining_days for stop in state.route],
+            "collected_materials": dict(zip(("0", "1", "2"), state.collected_materials)),
+            "remaining_dv": state.remaining_dv,
+            "final_day": state.current_day,
+        })
 
         self.assertEqual([call.args[-2:] for call in select.call_args_list], [(205, 29), (210, 27)])
         self.assertLessEqual(len(transfer_calls) + 44, 98)

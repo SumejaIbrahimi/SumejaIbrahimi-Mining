@@ -9,11 +9,31 @@ import sys
 
 
 SOURCE = Path("catalog_wide_best_result.json")
+OUTPUT = Path("early_gold_best_result.json")
 SCHEDULES = ((205, 29), (210, 27))
 LEG_COUNT = 22
 SOLVE_LIMIT = 98
 TIME_LIMIT = 30
 TANK = 10000.0
+
+
+def export_result(state, official_score):
+    """Create a new result using the catalog-wide route JSON schema."""
+    result = {
+        "algorithm": "Early gold local search",
+        "candidate_strategy": "catalog-wide",
+        "score": min(state.collected_materials),
+        "official_score": official_score,
+        "visited_asteroids": [stop.asteroid_id for stop in state.route],
+        "arrival_times": [stop.arrival_day for stop in state.route],
+        "mining_times": [stop.mining_days for stop in state.route],
+        "collected_materials": dict(enumerate(state.collected_materials)),
+        "remaining_dv": state.remaining_dv,
+        "final_day": state.current_day,
+    }
+    payload = json.dumps(result, indent=4, allow_nan=False)
+    with OUTPUT.open("x", encoding="utf-8") as file:
+        file.write(payload + "\n")
 
 
 def gold_candidates(udp, visited, epoch, mining_days):
@@ -132,6 +152,15 @@ def run():
     gold = best.route[2]
     print(f"Gold {gold.asteroid_id} on day {gold.arrival_day}, stay {gold.mining_days}"
           f" | official ESA score {score!r} | delta vs incumbent {score - baseline:+.12f}")
+    if score <= baseline:
+        print("The official score did not improve the incumbent.")
+        return
+    try:
+        export_result(best, score)
+    except FileExistsError:
+        print(f"{OUTPUT} already exists. Kept the existing result.")
+    else:
+        print(f"Saved {OUTPUT}")
 
 
 def main():
