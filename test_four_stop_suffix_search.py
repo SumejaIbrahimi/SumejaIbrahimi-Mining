@@ -1,5 +1,7 @@
 """Exercise suffix search with synthetic Lambert costs and the saved itinerary."""
 
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import subprocess
 from types import SimpleNamespace
@@ -70,54 +72,92 @@ class FourStopSuffixTests(unittest.TestCase):
             self.assertEqual(suffix.main(), 1)
         self.assertEqual(run.call_args.kwargs["timeout"], 598)
 
-    def tiny_search(self, departure, fuel, costs):
+    def tiny_search(self, departure, fuel, costs, solve_limit=suffix.MAX_SOLVES):
         udp = SimpleNamespace(
-            asteroid_materials_types=[0, 3, 0, 1, 2, 0],
-            asteroid_masses=[0, 1, 1, 1, 1, 0.04],
+            asteroid_materials_types=[0, 3, 0, 1, 2, 0, 0],
+            asteroid_masses=[0, 1, 1, 1, 1, 0.04, 1],
         )
+        budget = suffix.Budget(costs, suffix.time.perf_counter() + 60)
+        budget.solve_limit = solve_limit
         engine = SimpleNamespace(udp=udp, apply_candidate=self.beam.apply_candidate,
-                                 calculate_transfer_dv=costs)
+                                 calculate_transfer_dv=budget)
         anchor = self.beam.BeamState(0, departure, fuel, (8.96, 8.96, 8.96),
                                      frozenset({0}), (self.beam.RouteStop(0, 0, 1),))
 
         class Shortlist:
             np = SimpleNamespace(asarray=lambda values, dtype: list(values))
             masses = udp.asteroid_masses
-            groups = [[0, 2, 5], [3], [4], [1]]
+            groups = [[0, 2, 5, 6], [3], [4], [1]]
 
             def __call__(self, state, arrival, *, kinds, per_material):
                 kind, = kinds
-                return list(self.groups[kind])
+                return list(self.groups[kind][:per_material])
 
-        return suffix.search(engine, Shortlist(), Mock(), anchor, anchor)
+        output = StringIO()
+        with redirect_stdout(output):
+            best, reason = suffix.search(engine, Shortlist(), budget, anchor, anchor)
+        self.assertEqual(budget.solve_limit, solve_limit)
+        return best, reason, output.getvalue()
 
     def test_search_can_refuel_first_and_rejects_infeasible_arrival(self):
         costs = Mock(side_effect=lambda source, target, departure, arrival: 50 if target == 1 else 100)
-        best, _ = self.tiny_search(1816, 50, costs)
+        best, _, _ = self.tiny_search(1816, 50, costs)
         self.assertEqual(best.route[1].asteroid_id, 1)
         self.assertEqual(best.current_day, 1827)
         self.assertGreater(min(best.collected_materials), 9)
         self.assertAlmostEqual(best.remaining_dv, suffix.TANK / 30 - 300)
         self.assertTrue(all(call.args[1] != 5 for call in costs.call_args_list))
         self.assertTrue(all(call.args[3] - call.args[2] == 1 for call in costs.call_args_list))
-        best, _ = self.tiny_search(1816, 49, costs)
+        best, _, output = self.tiny_search(1816, 49, costs)
         self.assertIsNone(best)
+        self.assertIn("frontier empty after layer 1 (finished)", output)
+        self.assertNotIn("layer 2:", output)
 
     def test_material_and_time_bounds_keep_strict_score_threshold(self):
         stays = suffix.mining_requirements((9 - 1 / 30, 9.01, 7))
         self.assertEqual(stays, {0: 2, 1: 1, 2: 61, 3: 1})
         costs = Mock()
-        self.assertEqual(self.tiny_search(1817, 50, costs), (None, "material or time bound"))
+        self.assertEqual(self.tiny_search(1817, 50, costs), (None, "material or time bound", ""))
         costs.assert_not_called()
 
     def test_frontier_retains_distinct_epochs_and_fuel_states_at_same_asteroid(self):
         states = [
-            self.beam.BeamState(1, day, fuel, (9.1, 8.2, 8.3), frozenset({0, 1}), ())
-            for day, fuel in [(1700, 2000), (1700, 3500), (1703, 2000)]
+            self.beam.BeamState(1, day, fuel, (material, 8.2, 8.3), frozenset({0, 1}), ())
+            for day, fuel, material in [(1701, 2000, 9.2), (1701, 2100, 9.1), (1702, 2000, 9.2)]
         ]
+        dominated = self.beam.BeamState(1, 1701, 2000, (9.1, 8.2, 8.3),
+                                       frozenset({0, 1}), ())
         remaining = frozenset({1, 2, 3})
-        self.assertCountEqual(suffix.select_frontier((state, remaining) for state in states),
+        children = [(state, remaining) for state in states + [dominated]]
+        self.assertCountEqual(suffix.select_frontier(children, 24),
                               [(state, remaining) for state in states])
+
+    def test_wider_pass_finds_hidden_asteroid_and_reuses_exact_solves(self):
+        def calculate(source, target, departure, arrival):
+            return {1: 50, 2: 500}.get(target, 100)
+
+        costs = Mock(side_effect=calculate)
+        with patch.object(suffix, "WIDENING_PASSES", ((2, 1, 0.4), (8, 2, 1.0))):
+            best, reason, output = self.tiny_search(1816, 50, costs, solve_limit=100)
+        self.assertIn(6, best.visited_asteroids)
+        self.assertNotIn(2, best.visited_asteroids)
+        self.assertEqual(reason, "widening passes finished")
+        self.assertIn("Pass 1: beam width 2, shortlist 1", output)
+        self.assertIn("Pass 1, layer 4:", output)
+        self.assertRegex(output, r"Pass 1, layer 4:[^\n]*completed routes 0")
+        self.assertIn("Pass 2: beam width 8, shortlist 2", output)
+        self.assertIn("Pass 2: terminal layer finished", output)
+        self.assertRegex(output, r"Pass 2, layer 4: exact Lambert probes \d+, "
+                                 r"fuel-feasible children \d+, retained states 0, completed routes [1-9]")
+        self.assertEqual(costs.call_count, len({call.args for call in costs.call_args_list}))
+
+    def test_small_pass_budget_reserves_solves_for_wider_terminal_layer(self):
+        costs = Mock(side_effect=lambda source, target, departure, arrival: 50 if target == 1 else 100)
+        best, _, output = self.tiny_search(1816, 50, costs, solve_limit=20)
+        self.assertIn("Pass 1: frontier empty after layer 1 (Lambert solve limit reached)", output)
+        self.assertIn("Pass 3, layer 4:", output)
+        self.assertIsNotNone(best)
+        self.assertLessEqual(costs.call_count, 20)
 
 
 if __name__ == "__main__":

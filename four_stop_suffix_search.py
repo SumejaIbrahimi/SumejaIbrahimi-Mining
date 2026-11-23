@@ -13,6 +13,7 @@ from global_multistart_beam import (
     CatalogShortlist, MAX_SOLVES, MISSION_END, SearchLimit, TANK, TIME_LIMIT,
     VALIDATION_SECONDS,
 )
+from pareto_tail_search import pareto_front
 
 
 SOURCE = Path(__file__).with_name("global_multistart_best_result.json")
@@ -21,8 +22,8 @@ BASELINE = 8.75296423786425
 GOAL = 9.0
 ANCHOR = (7230, 1670)
 KINDS = frozenset(range(4))
-BEAM_WIDTH = 24
-PER_MATERIAL = 6
+# Beam width, targets per material/arrival, cumulative share of the search budget.
+WIDENING_PASSES = ((24, 6, 0.25), (48, 10, 0.55), (96, 16, 1.0))
 SCORE_TOLERANCE = 1e-8
 
 
@@ -136,7 +137,7 @@ def minimum_days(kinds, stays):
     return sum(1 + stays[kind] for kind in kinds)
 
 
-def select_frontier(children):
+def select_frontier(children, beam_width):
     """Share slots across remaining material sets and preserve timing/fuel variants."""
     groups = defaultdict(list)
     for state, remaining in children:
@@ -144,26 +145,103 @@ def select_frontier(children):
 
     queues = []
     for remaining, states in groups.items():
-        ranked = sorted(states, key=lambda state: (
+        # Only compare fuel and materials for identical asteroid, exact day and visited set.
+        ranked = sorted(pareto_front(states), key=lambda state: (
             state.remaining_dv / (TANK / 30) - state.current_day,
             min(state.collected_materials), state.remaining_dv,
         ), reverse=True)
-        distinct, seen = deque(), set()
-        for state in ranked:
-            key = (state.current_id, state.current_day // 3, int(state.remaining_dv // 750))
-            if key not in seen:
-                seen.add(key)
-                distinct.append((state, remaining))
-        queues.append(distinct)
+        queues.append(deque((state, remaining) for state in ranked))
 
     selected = []
-    while queues and len(selected) < BEAM_WIDTH:
+    while queues and len(selected) < beam_width:
         for queue in queues:
             selected.append(queue.popleft())
-            if len(selected) == BEAM_WIDTH:
+            if len(selected) == beam_width:
                 break
         queues = [queue for queue in queues if queue]
     return selected
+
+
+def expand(engine, shortlist, budget, transfer, stays, incumbent_id,
+           parent, remaining, kind, per_material):
+    """Yield one batch per target so a cutoff preserves prior probes in the layer."""
+    later = remaining - {kind}
+    latest_departure = MISSION_END - minimum_days(later, stays)
+    for arrival in range(parent.current_day + 1, latest_departure - stays[kind] + 1):
+        budget.check_time()
+        targets = shortlist(parent, arrival, kinds=(kind,), per_material=per_material)
+        if (incumbent_id is not None and incumbent_id not in targets
+                and incumbent_id not in parent.visited_asteroids):
+            targets.append(incumbent_id)
+        for target in targets:
+            dv = transfer(parent.current_id, target, parent.current_day, arrival)
+            if not 0 <= dv <= parent.remaining_dv:
+                yield ()
+                continue
+            option = candidate(engine.udp, target, arrival, dv)
+            maximum = min(60, latest_departure - arrival)
+            # At the final stop a longer stay cannot worsen the score or fuel.
+            durations = range(stays[kind], maximum + 1) if later else (maximum,)
+            children = []
+            for duration in durations:
+                child = engine.apply_candidate(parent, option, duration)
+                if child is not None:
+                    children.append((child, later))
+            yield children
+
+
+def search_pass(engine, shortlist, budget, transfer, anchor, stays, incumbent_ids,
+                pass_number, beam_width, per_material, solve_end, time_end, best):
+    frontier = [(anchor, KINDS)]
+    pass_reason = "terminal layer finished"
+    for layer in range(1, len(KINDS) + 1):
+        before = budget.solves
+        now = time.perf_counter()
+        layers_left = len(KINDS) - layer + 1
+        # Unused allowance rolls forward. Keep a share for each later layer.
+        allowance = max(0, solve_end - before)
+        budget.solve_limit = before + allowance // layers_left
+        budget.deadline = min(time_end, now + max(0, time_end - now) / layers_left)
+        pending = deque(
+            expand(engine, shortlist, budget, transfer, stays, incumbent_ids.get(kind),
+                   parent, remaining, kind, per_material)
+            for parent, remaining in frontier for kind in sorted(remaining)
+        )
+        children = []
+        feasible = completed = 0
+        layer_reason = "finished"
+        try:
+            while pending:
+                expansion = pending.popleft()
+                batch = next(expansion, None)
+                if batch is None:
+                    continue
+                pending.append(expansion)
+                feasible += len(batch)
+                for child, remaining in batch:
+                    if remaining:
+                        children.append((child, remaining))
+                    else:
+                        completed += 1
+                        if min(child.collected_materials) > GOAL and (
+                            best is None or result_rank(child) > result_rank(best)
+                        ):
+                            best = child
+        except SearchLimit as error:
+            layer_reason = str(error)
+        frontier = select_frontier(children, beam_width)
+        print(f"Pass {pass_number}, layer {layer}: exact Lambert probes {budget.solves - before}, "
+              f"fuel-feasible children {feasible}, retained states {len(frontier)}, "
+              f"completed routes {completed} | {layer_reason}")
+        if layer == len(KINDS):
+            if layer_reason != "finished":
+                pass_reason = f"terminal layer stopped at {layer_reason}"
+            break
+        if not frontier:
+            pass_reason = f"frontier empty after layer {layer} ({layer_reason})"
+            break
+    print(f"Pass {pass_number}: {pass_reason}")
+    return best
 
 
 def search(engine, shortlist, budget, anchor, incumbent):
@@ -171,9 +249,9 @@ def search(engine, shortlist, budget, anchor, incumbent):
     def transfer(source, target, departure, arrival):
         try:
             return engine.calculate_transfer_dv(source, target, departure, arrival)
-        except (ValueError, RuntimeError) as error:
-            if isinstance(error, SearchLimit):
-                raise
+        except SearchLimit:
+            raise
+        except (ValueError, RuntimeError):
             return math.nan
 
     stays = mining_requirements(anchor.collected_materials)
@@ -182,50 +260,27 @@ def search(engine, shortlist, budget, anchor, incumbent):
             or anchor.current_day + minimum_days(KINDS, stays) > MISSION_END):
         return None, "material or time bound"
     shortlist.groups = groups
-    incumbent_ids = {
-        int(engine.udp.asteroid_materials_types[stop.asteroid_id]): stop.asteroid_id
-        for stop in incumbent.route[len(anchor.route):]
-    }
-    frontier = [(anchor, KINDS)]
+    incumbent_ids = {}
+    for stop in incumbent.route[len(anchor.route):]:
+        kind = int(engine.udp.asteroid_materials_types[stop.asteroid_id])
+        if stop.asteroid_id in groups[kind]:
+            incumbent_ids[kind] = stop.asteroid_id
+
+    solve_start, solve_limit = budget.solves, budget.solve_limit
+    time_start, deadline = time.perf_counter(), budget.deadline
     best = None
     try:
-        for _ in range(4):
-            children = []
-            for parent, remaining in frontier:
-                for kind in sorted(remaining):
-                    later = remaining - {kind}
-                    latest_departure = MISSION_END - minimum_days(later, stays)
-                    for arrival in range(parent.current_day + 1, latest_departure - stays[kind] + 1):
-                        budget.check_time()
-                        targets = shortlist(parent, arrival, kinds=(kind,), per_material=PER_MATERIAL)
-                        incumbent_id = incumbent_ids.get(kind)
-                        if incumbent_id is not None and incumbent_id not in targets:
-                            if incumbent_id in groups[kind] and incumbent_id not in parent.visited_asteroids:
-                                targets.append(incumbent_id)
-                        for target in targets:
-                            dv = transfer(parent.current_id, target, parent.current_day, arrival)
-                            if not 0 <= dv <= parent.remaining_dv:
-                                continue
-                            option = candidate(engine.udp, target, arrival, dv)
-                            maximum = min(60, latest_departure - arrival)
-                            # At the last stop a longer stay cannot worsen the score or fuel.
-                            durations = range(stays[kind], maximum + 1) if later else (maximum,)
-                            for duration in durations:
-                                child = engine.apply_candidate(parent, option, duration)
-                                if child is None:
-                                    continue
-                                if later:
-                                    children.append((child, later))
-                                elif min(child.collected_materials) > GOAL:
-                                    if best is None or result_rank(child) > result_rank(best):
-                                        best = child
-            budget.check_time()
-            if not children:
-                break
-            frontier = select_frontier(children)
-    except SearchLimit as error:
-        return best, str(error)
-    return best, "suffix search finished"
+        for number, (width, targets, share) in enumerate(WIDENING_PASSES, 1):
+            if time.perf_counter() >= deadline or budget.solves >= solve_limit:
+                return best, "search budget exhausted"
+            solve_end = solve_start + int((solve_limit - solve_start) * share)
+            time_end = time_start + (deadline - time_start) * share
+            print(f"Pass {number}: beam width {width}, shortlist {targets} per material and arrival")
+            best = search_pass(engine, shortlist, budget, transfer, anchor, stays, incumbent_ids,
+                               number, width, targets, solve_end, time_end, best)
+    finally:
+        budget.solve_limit, budget.deadline = solve_limit, deadline
+    return best, "widening passes finished"
 
 
 def result_rank(state):
