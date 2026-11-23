@@ -72,7 +72,7 @@ class FourStopSuffixTests(unittest.TestCase):
             self.assertEqual(suffix.main(), 1)
         self.assertEqual(run.call_args.kwargs["timeout"], 598)
 
-    def tiny_search(self, departure, fuel, costs, solve_limit=suffix.MAX_SOLVES):
+    def tiny_search(self, departure, fuel, costs, solve_limit=suffix.MAX_SOLVES, shortlist_calls=None):
         udp = SimpleNamespace(
             asteroid_materials_types=[0, 3, 0, 1, 2, 0, 0],
             asteroid_masses=[0, 1, 1, 1, 1, 0.04, 1],
@@ -91,6 +91,8 @@ class FourStopSuffixTests(unittest.TestCase):
 
             def __call__(self, state, arrival, *, kinds, per_material):
                 kind, = kinds
+                if shortlist_calls is not None:
+                    shortlist_calls(state.current_id, arrival, kind)
                 return list(self.groups[kind][:per_material])
 
         output = StringIO()
@@ -110,7 +112,7 @@ class FourStopSuffixTests(unittest.TestCase):
         self.assertTrue(all(call.args[3] - call.args[2] == 1 for call in costs.call_args_list))
         best, _, output = self.tiny_search(1816, 49, costs)
         self.assertIsNone(best)
-        self.assertIn("frontier empty after layer 1 (finished)", output)
+        self.assertIn("frontier empty after layer 1 (exhausted all candidates)", output)
         self.assertNotIn("layer 2:", output)
 
     def test_material_and_time_bounds_keep_strict_score_threshold(self):
@@ -154,10 +156,47 @@ class FourStopSuffixTests(unittest.TestCase):
     def test_small_pass_budget_reserves_solves_for_wider_terminal_layer(self):
         costs = Mock(side_effect=lambda source, target, departure, arrival: 50 if target == 1 else 100)
         best, _, output = self.tiny_search(1816, 50, costs, solve_limit=20)
-        self.assertIn("Pass 1: frontier empty after layer 1 (Lambert solve limit reached)", output)
         self.assertIn("Pass 3, layer 4:", output)
         self.assertIsNotNone(best)
         self.assertLessEqual(costs.call_count, 20)
+
+    def test_borrowing_resumes_the_blocked_probe_and_stops_at_normal_quota_after_child(self):
+        costs = Mock(side_effect=lambda source, target, departure, arrival: 50 if target == 1 else 100)
+        shortlist_calls = Mock()
+        with patch.object(suffix, "WIDENING_PASSES", ((24, 6, 1.0),)):
+            best, _, output = self.tiny_search(1816, 50, costs, 12, shortlist_calls)
+        self.assertIn("layer 1: exact Lambert probes 4", output)
+        self.assertIn("normal quota cutoff | borrowed solves 1", output)
+        root_calls = [call.args for call in shortlist_calls.call_args_list if call.args[0] == 0]
+        self.assertEqual(root_calls, [(0, 1817, kind) for kind in range(4)])
+        self.assertEqual([call.args[1] for call in costs.call_args_list[:4]], [2, 3, 4, 1])
+        self.assertIsNotNone(best)
+        self.assertLessEqual(costs.call_count, 12)
+
+    def test_borrowing_cutoff_preserves_later_layer_reserve(self):
+        costs = Mock(return_value=100)
+        with patch.object(suffix, "WIDENING_PASSES", ((24, 6, 1.0),)):
+            best, _, output = self.tiny_search(1814, 50, costs, 12)
+        self.assertIsNone(best)
+        # The normal allowance is 3. Of the remaining 9, reserve 5 and borrow up to 4.
+        self.assertEqual(costs.call_count, 7)
+        self.assertIn("borrowed allowance cutoff | borrowed solves 4 | zero accepted children", output)
+        self.assertNotIn("layer 2:", output)
+
+    def test_extension_cannot_cross_hard_global_solve_limit(self):
+        lambert = Mock(return_value=42)
+        budget = suffix.Budget(lambert, suffix.time.perf_counter() + 60)
+        budget.solves = budget.solve_limit = suffix.MAX_SOLVES - 1
+
+        def extend():
+            budget.solve_limit = suffix.MAX_SOLVES + 1
+
+        budget.extend_solve_limit = extend
+        self.assertEqual(budget(), 42)
+        with self.assertRaisesRegex(suffix.SearchLimit, "solve limit"):
+            budget()
+        self.assertEqual(budget.solves, suffix.MAX_SOLVES)
+        lambert.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ class Budget:
         self.deadline = deadline
         self.solve_limit = MAX_SOLVES
         self.solves = 0
+        self.extend_solve_limit = None
 
     def check_time(self):
         if time.perf_counter() >= self.deadline:
@@ -42,7 +43,9 @@ class Budget:
 
     def __call__(self, *args, **kwargs):
         self.check_time()
-        if self.solves >= self.solve_limit:
+        if self.solves >= self.solve_limit and self.extend_solve_limit is not None:
+            self.extend_solve_limit()
+        if self.solves >= min(self.solve_limit, MAX_SOLVES):
             raise SearchLimit("Lambert solve limit reached")
         self.solves += 1
         return self.lambert(*args, **kwargs)
@@ -200,7 +203,13 @@ def search_pass(engine, shortlist, budget, transfer, anchor, stays, incumbent_id
         layers_left = len(KINDS) - layer + 1
         # Unused allowance rolls forward. Keep a share for each later layer.
         allowance = max(0, solve_end - before)
-        budget.solve_limit = before + allowance // layers_left
+        normal_limit = before + allowance // layers_left
+        # Keep half of the normal later-layer allocation, with one solve per
+        # later layer when available. Borrowing never crosses the pass ceiling.
+        later_allowance = solve_end - normal_limit
+        reserve = max(layers_left - 1, (later_allowance + 1) // 2)
+        borrow_limit = max(normal_limit, solve_end - reserve)
+        budget.solve_limit = normal_limit
         budget.deadline = min(time_end, now + max(0, time_end - now) / layers_left)
         pending = deque(
             expand(engine, shortlist, budget, transfer, stays, incumbent_ids.get(kind),
@@ -209,7 +218,14 @@ def search_pass(engine, shortlist, budget, transfer, anchor, stays, incumbent_id
         )
         children = []
         feasible = completed = 0
-        layer_reason = "finished"
+        layer_reason = "exhausted all candidates"
+
+        def extend_solve_limit():
+            if not children:
+                budget.solve_limit = borrow_limit
+
+        if layers_left > 1 and borrow_limit > normal_limit:
+            budget.extend_solve_limit = extend_solve_limit
         try:
             while pending:
                 expansion = pending.popleft()
@@ -221,6 +237,7 @@ def search_pass(engine, shortlist, budget, transfer, anchor, stays, incumbent_id
                 for child, remaining in batch:
                     if remaining:
                         children.append((child, remaining))
+                        budget.solve_limit = normal_limit
                     else:
                         completed += 1
                         if min(child.collected_materials) > GOAL and (
@@ -229,12 +246,19 @@ def search_pass(engine, shortlist, budget, transfer, anchor, stays, incumbent_id
                             best = child
         except SearchLimit as error:
             layer_reason = str(error)
+            if layer_reason == "Lambert solve limit reached":
+                layer_reason = ("borrowed allowance cutoff" if budget.solve_limit > normal_limit
+                                else "normal quota cutoff")
+        finally:
+            budget.extend_solve_limit = None
         frontier = select_frontier(children, beam_width)
+        borrowed = max(0, budget.solves - max(before, normal_limit))
         print(f"Pass {pass_number}, layer {layer}: exact Lambert probes {budget.solves - before}, "
               f"fuel-feasible children {feasible}, retained states {len(frontier)}, "
-              f"completed routes {completed} | {layer_reason}")
+              f"completed routes {completed} | {layer_reason} | borrowed solves {borrowed}"
+              + (" | zero accepted children" if not feasible else ""))
         if layer == len(KINDS):
-            if layer_reason != "finished":
+            if layer_reason != "exhausted all candidates":
                 pass_reason = f"terminal layer stopped at {layer_reason}"
             break
         if not frontier:
